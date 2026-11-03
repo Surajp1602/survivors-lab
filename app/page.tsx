@@ -86,7 +86,7 @@ export default function Page() {
     const text = `# Survivors report — ${specimen.name}\n\n${scopeText}\n\n${scoreText}\n\n${survivors.map((m) => `- ${m.operator}, line ${m.line}: ${m.before} → ${m.after}\n  ${m.hint}`).join('\n')}`
     await navigator.clipboard.writeText(text); setCopied('report'); setTimeout(() => setCopied(''), 1600)
   }
-  const meta = [['Function', specimen.name], ['Tests', tests.split('\n').filter(Boolean).length], ['Mutants', mutants.length || '—'], ['Killed', killed.length || '—'], ['Survivors', mutants.length ? survivors.length : '—']]
+  const meta = [['Function', specimen.name], ['Tests', tests.split('\n').filter(Boolean).length], ['Mutants', runScope ? mutants.length : '—'], ['Killed', runScope ? killed.length : '—'], ['Survivors', runScope ? survivors.length : '—']]
   const changed = scope === 'changed'
   return <><a className="skip" href="#lab">Skip to content</a><header className="masthead"><a className="wordmark" href="#top">SURVIVORS<span>.</span></a><nav><a href="#lab">Lab</a><a href="#guide">Field Guide</a><a href="#about">About</a></nav><a className="button button-small" href="#lab">Run the lab <ArrowUpRight size={15}/></a></header>
     <main id="top"><section className="hero page-grid"><div className="hero-copy"><p className="eyebrow">Mutation testing / browser lab</p><h1>Your tests passed.<br/><em>Here&apos;s what they let live.</em></h1><p className="lede">Code coverage tells you what ran. Mutation testing tells you whether your tests would notice if it were wrong.</p></div><div className="hero-mark" aria-hidden="true"><FlaskConical size={56} strokeWidth={1}/><span>LAB<br/>01—04</span></div></section>
