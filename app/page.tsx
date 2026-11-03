@@ -11,7 +11,7 @@ import { createBrowserRunner } from '@/lib/browser-runner'
 import { fieldGuide, marquee } from '@/lib/catalogue'
 import type { SyntaxProblem } from '@/lib/diagnostics'
 import { changedLines, checkOriginal, noManual, planRun, scopedLines, scoreOf, testMutant, type Manual, type Mutant, type RunConfig, type Scope } from '@/lib/engine'
-import { alsoKilled, catalogueNo, progressLabel, resultsState, staleNote } from '@/lib/view'
+import { alsoKilled, catalogueNo, diffParts, progressLabel, resultsState, staleNote } from '@/lib/view'
 import type { Runner } from '@/lib/runner'
 import { clientPlatform, shortcutLabel } from '@/lib/platform'
 import { specimens, type Specimen } from '@/lib/presets'
@@ -26,7 +26,15 @@ const scopeBar = new ScopeBar()
 const noSubscribe = () => () => {}
 /** Highlight the line a syntax error points at. */
 const errorLine = (line: number | null): Extension[] => line === null ? [] : [EditorView.decorations.of((view) => Decoration.set([Decoration.line({ class: 'cm-error-line' }).range(view.state.doc.line(Math.min(line, view.state.doc.lines)).from)]))]
-type RunScope = { mode: Scope; before: string; manual: Manual; lines: number[]; totalLines: number; kept: number; total: number }
+/** Original line over mutant line, common indentation removed, changed token marked. */
+function LineDiff({ m }: { m: Mutant }) {
+  const { removed, added } = diffParts(m)
+  const indent = Math.min(...[removed[0], added[0]].map((s) => s.length - s.trimStart().length))
+  const row = (sign: '-' | '+', [pre, mid, post]: [string, string, string], kind: string) =>
+    <code className={kind}><span className="sign" aria-hidden="true">{sign}</span>{pre.slice(indent)}<mark>{mid}</mark>{post}</code>
+  return <pre className="line-diff" aria-label={`Line ${m.line}, original: ${removed.join('').trim()}; mutant: ${added.join('').trim()}`}>{row('-', removed, 'orig')}{row('+', added, 'mut')}</pre>
+}
+type RunScope ={ mode: Scope; before: string; manual: Manual; lines: number[]; totalLines: number; kept: number; total: number }
 
 export default function Page() {
   const [specimen, setSpecimen] = useState(specimens[0]); const [fn, setFn] = useState(specimens[0].fn); const [tests, setTests] = useState(specimens[0].tests)
@@ -176,7 +184,8 @@ export default function Page() {
       </section>
       <section className="report section-shell" id="report"><div className="section-heading"><div><p className="eyebrow">No. 02 / Findings</p><h2>Survivors report.</h2></div><div className="report-actions"><button className="text-button" onClick={copyLink}><Link2 size={15}/>{copied === 'link' ? 'Copied' : 'Copy link'}</button><button className="text-button" onClick={copyReport}><Copy size={15}/>{copied === 'report' ? 'Copied' : 'Copy report'}</button><button className="text-button" onClick={copyPrComment}><GitPullRequest size={15}/>{copied === 'pr' ? 'Copied' : 'Copy as PR comment'}</button></div></div>{stale && cards.length + marked.length > 0 && <p className="stale-note" role="status">{staleNote}</p>}<div className={stale ? 'is-stale' : undefined}>{cards.length === 0 ? <div className="empty"><Sparkles size={20}/><p>{error ? 'Fix the error above, then run again.' : noScopedMutants ? 'No mutable code on the changed lines.' : mutants.length ? 'All mutants killed. Excellent work.' : 'Run the lab to reveal what survived.'}</p></div> : <div className="survivor-list">{cards.map((m) => { const dead = killed.includes(m.id); return <motion.article layout key={m.key} className={`survivor-card ${selected === m.id ? 'selected' : ''} ${dead ? 'is-killed' : ''}`} onClick={() => setSelected(m.id)}>
           <div className="card-top"><span className="catalogue-no">{catalogueNo(m)}</span>{dead ? <span className="killed-label"><Check size={14}/> KILLED</span> : <span className="survived-label"><Skull size={14}/> SURVIVED</span>}</div>
-          <div className="card-main"><div><h3>{m.operator}</h3><p>Line {m.line} · {m.hint}</p></div><div className="diff"><span>{m.before}</span><b>→</b><strong>{m.after}</strong></div></div>
+          <div className="card-main"><h3>{m.operator}</h3><p>Line {m.line} · {m.hint}</p></div>
+          <LineDiff m={m}/>
           <div className="card-actions">{dead ? <span className="card-note">Killed by the generated test.</span> : <button className="text-button" disabled={running || stale || !!generating} onClick={(e) => { e.stopPropagation(); addKillingTest(m) }}><FlaskConical size={13}/>{generating === m.key ? 'Writing test…' : 'Add killing test'}</button>}{!dead && <button className="text-button" onClick={(e) => { e.stopPropagation(); toggleEquivalent(m) }}><Equal size={13}/>Mark as equivalent</button>}</div>
           {dead && !running && killedBy[m.key] && (() => { const others = alsoKilled(killedBy[m.key], m.key, mutants, killed); return others.length > 0 && <p className="card-note">Also killed: {others.map(catalogueNo).join(', ')}</p> })()}
           {notes[m.key] && <p className="card-note" role="status">{notes[m.key]}</p>}

@@ -23,6 +23,7 @@ const pairs: [text: string, background: string][] = [
   ['paper', 'ink'],
   ['on-accent', 'accent-strong'], ['on-accent', 'accent-strong-hover'],
   ['editor-text', 'editor-bg'], ['editor-strong', 'editor-bg'], ['editor-text', 'editor-error'], ['editor-strong', 'editor-error'],
+  ['added', 'diff-orig-bg'], ['accent-text', 'diff-mut-bg'],
 ]
 
 describe('colour contrast (WCAG AA, 4.5:1)', () => {
