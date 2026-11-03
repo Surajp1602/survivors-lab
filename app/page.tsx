@@ -33,7 +33,7 @@ function LineDiff({ m }: { m: Mutant }) {
   const indent = Math.min(...[removed[0], added[0]].map((s) => s.length - s.trimStart().length))
   const row = (sign: '-' | '+', [pre, mid, post]: [string, string, string], kind: string) =>
     <code className={kind}><span className="sign" aria-hidden="true">{sign}</span>{pre.slice(indent)}<mark>{mid}</mark>{post}</code>
-  return <pre className="line-diff" aria-label={`Line ${m.line}, original: ${removed.join('').trim()}; mutant: ${added.join('').trim()}`}>{row('-', removed, 'orig')}{row('+', added, 'mut')}</pre>
+  return <pre className="line-diff" aria-label={`Line ${m.line}: “${removed.join('').trim()}” becomes “${added.join('').trim()}”`}>{row('-', removed, 'orig')}{row('+', added, 'mut')}</pre>
 }
 type RunScope ={ mode: Scope; before: string; manual: Manual; lines: number[]; totalLines: number; kept: number; total: number }
 
