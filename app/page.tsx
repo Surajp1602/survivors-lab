@@ -113,9 +113,9 @@ export default function Page() {
   }, [scope, scoped, diffSet])
   const fnErrorLine = problem?.editor === 'Function' ? problem.line : null
   const testsErrorLine = problem?.editor === 'Tests' ? problem.line : null
-  const fnExtensions = useMemo(() => [javascript({ typescript: true }), ...scopeExtensions, ...errorLine(fnErrorLine)], [scopeExtensions, fnErrorLine])
-  const testsExtensions = useMemo(() => [javascript({ typescript: true }), ...errorLine(testsErrorLine)], [testsErrorLine])
-  const jsExtensions = useMemo(() => [javascript({ typescript: true })], [])
+  const fnExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping, ...scopeExtensions, ...errorLine(fnErrorLine)], [scopeExtensions, fnErrorLine])
+  const testsExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping, ...errorLine(testsErrorLine)], [testsErrorLine])
+  const jsExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping], [])
 
   // Write a test that kills this mutant, insert it only if it passes on the original and fails on the mutant, then rerun.
   const addKillingTest = async (m: Mutant) => {
