@@ -1,7 +1,7 @@
 import { parse } from 'acorn'
 import { ancestor, simple } from 'acorn-walk'
 import { diffLines } from 'diff'
-import { runSuite } from './harness'
+import type { Runner, SuiteOutcome } from './runner'
 import { prepare } from './source'
 
 export type Scope = 'whole' | 'changed'
@@ -124,11 +124,14 @@ export function createMutants(input: string): Mutant[] {
   return found
 }
 
-export function runTests(fnSource: string, testsSource: string): { ok: boolean; message?: string } {
-  try {
-    const fn = prepare(fnSource)
-    return runSuite(fn.code, fn.names, prepare(testsSource).code)
-  } catch (e: any) { return { ok: false, message: e.message || 'Unknown failure' } }
+export const infiniteLoopMessage = "Your code doesn't finish on its own; check for an infinite loop"
+
+/** Run the tests against the code in a worker. Syntax errors are reported without reaching a worker. */
+export async function runTests(runner: Runner, fnSource: string, testsSource: string): Promise<SuiteOutcome> {
+  let fn: ReturnType<typeof prepare>
+  let testsCode: string
+  try { fn = prepare(fnSource); testsCode = prepare(testsSource).code } catch (e: any) { return { ok: false, count: 0, message: e.message || 'Unknown failure' } }
+  return runner.suite(fn.code, fn.names, testsCode)
 }
 
 export type RunPlan = { mutants: Mutant[]; lines: number[]; total: number; names: string[]; testsCode: string }
@@ -144,16 +147,25 @@ export function planRun(cfg: RunConfig): RunPlan {
   return { mutants: inScope.map((m, i) => ({ ...m, id: i })), lines, total: all.length, names, testsCode }
 }
 
-export const isKilled = (m: Mutant, plan: RunPlan) => !runSuite(m.source, plan.names, plan.testsCode).ok
+export type MutantOutcome = { killed: boolean; timedOut: boolean; cancelled: boolean }
 
-export type EngineResult = { error?: string; plan: RunPlan; killed: number[] }
+/** A mutant that fails the suite, or doesn't finish within the timeout, is killed. */
+export async function testMutant(runner: Runner, m: Mutant, plan: RunPlan): Promise<MutantOutcome> {
+  const r = await runner.suite(m.source, plan.names, plan.testsCode)
+  return { killed: !r.ok && !r.cancelled, timedOut: !!r.timedOut, cancelled: !!r.cancelled }
+}
 
-/** Synchronous whole run: check the original passes, then test every in-scope mutant. */
-export function runEngine(cfg: RunConfig): EngineResult {
-  const original = runTests(cfg.fn, cfg.tests)
-  if (!original.ok) return { error: original.message, plan: { mutants: [], lines: [], total: 0, names: [], testsCode: '' }, killed: [] }
+export type EngineResult = { error?: string; plan: RunPlan; killed: number[]; timedOut: number[] }
+
+/** Whole run: check the original passes, then test every in-scope mutant across the runner's workers. */
+export async function runEngine(runner: Runner, cfg: RunConfig): Promise<EngineResult> {
+  const empty: RunPlan = { mutants: [], lines: [], total: 0, names: [], testsCode: '' }
+  const original = await runTests(runner, cfg.fn, cfg.tests)
+  if (original.timedOut) return { error: infiniteLoopMessage, plan: empty, killed: [], timedOut: [] }
+  if (!original.ok) return { error: original.message, plan: empty, killed: [], timedOut: [] }
   const plan = planRun(cfg)
-  return { plan, killed: plan.mutants.filter((m) => isKilled(m, plan)).map((m) => m.id) }
+  const outcomes = await Promise.all(plan.mutants.map((m) => testMutant(runner, m, plan)))
+  return { plan, killed: plan.mutants.filter((_, i) => outcomes[i].killed).map((m) => m.id), timedOut: plan.mutants.filter((_, i) => outcomes[i].timedOut).map((m) => m.id) }
 }
 
 export type Score = { score: number; counted: number; killed: number; equivalent: number }

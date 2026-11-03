@@ -2,11 +2,13 @@
 
 import dynamic from 'next/dynamic'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { ArrowUpRight, Check, Circle, Copy, Equal, GitPullRequest, FlaskConical, Link2, Play, ShieldAlert, Skull, Sparkles, Undo2 } from 'lucide-react'
+import { ArrowUpRight, Check, Circle, Clock, Copy, Equal, GitPullRequest, FlaskConical, Link2, Play, ShieldAlert, Skull, Sparkles, Undo2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'motion/react'
 import { javascript } from '@codemirror/lang-javascript'
 import { lineNumbers, gutter, GutterMarker, type EditorView, type BlockInfo, type Extension } from '@uiw/react-codemirror'
-import { changedLines, isKilled, noManual, planRun, runTests, scopedLines, scoreOf, type Manual, type Mutant, type RunConfig, type Scope } from '@/lib/engine'
+import { createBrowserRunner } from '@/lib/browser-runner'
+import { changedLines, infiniteLoopMessage, noManual, planRun, runTests, scopedLines, scoreOf, testMutant, type Manual, type Mutant, type RunConfig, type Scope } from '@/lib/engine'
+import type { Runner } from '@/lib/runner'
 import { clientPlatform, shortcutLabel } from '@/lib/platform'
 import { specimens, type Specimen } from '@/lib/presets'
 import { generateKillingTest } from '@/lib/killing'
@@ -27,6 +29,7 @@ export default function Page() {
   const [runScope, setRunScope] = useState<RunScope | null>(null); const runToken = useRef(0)
   const [lastRun, setLastRun] = useState<RunConfig | null>(null); const [generated, setGenerated] = useState<string[]>([]); const [notes, setNotes] = useState<Record<string, string>>({})
   const [equivalent, setEquivalent] = useState<string[]>([])
+  const [timedOut, setTimedOut] = useState<number[]>([]); const [generating, setGenerating] = useState<string | null>(null); const runnerRef = useRef<Runner | null>(null)
   const tally = scoreOf(mutants, killed, equivalent); const score = tally.score
   const isEquivalent = (m: Mutant) => equivalent.includes(m.key)
   const survivors = mutants.filter((m) => !killed.includes(m.id) && !isEquivalent(m)); const marked = mutants.filter(isEquivalent)
@@ -36,22 +39,30 @@ export default function Page() {
   const scoped = useMemo(() => scopedLines(before, fn, manual), [before, fn, manual])
   const noScopedMutants = runScope?.mode === 'changed' && runScope.kept === 0
 
+  // All test execution happens in the worker pool, so a mutant that never finishes can't freeze the page.
+  const getRunner = () => (runnerRef.current ??= createBrowserRunner())
+  useEffect(() => () => { runnerRef.current?.dispose(); runnerRef.current = null }, [])
+
   const run = async (cfg: RunConfig = { fn, tests, scope, before, manual }) => {
     const token = ++runToken.current
-    setError(''); setSelected(null)
-    const original = runTests(cfg.fn, cfg.tests)
-    if (!original.ok) { setRunning(false); setError(`Your tests fail on the original code — fix them before hunting mutants. ${original.message}`); return }
+    const runner = getRunner()
+    runner.cancelPending()
+    setError(''); setSelected(null); setRunning(true)
+    const original = await runTests(runner, cfg.fn, cfg.tests)
+    if (token !== runToken.current || original.cancelled) return
+    if (!original.ok) { setRunning(false); setError(original.timedOut ? infiniteLoopMessage : `Your tests fail on the original code — fix them before hunting mutants. ${original.message}`); return }
     setLastRun(cfg)
     const plan = planRun(cfg)
     const { mutants: next, lines, total } = plan
     setRunScope({ mode: cfg.scope, before: cfg.before, manual: cfg.manual, lines, totalLines: cfg.fn.split('\n').length, kept: next.length, total })
-    setMutants(next); setKilled([]); setRunning(true)
-    for (const m of next) {
-      await new Promise((r) => setTimeout(r, 110))
+    setMutants(next); setKilled([]); setTimedOut([])
+    await Promise.all(next.map(async (m) => {
+      const r = await testMutant(runner, m, plan)
       if (token !== runToken.current) return
-      if (isKilled(m, plan)) setKilled((old) => [...old, m.id])
-    }
-    setRunning(false)
+      if (r.killed) setKilled((old) => [...old, m.id])
+      if (r.timedOut) setTimedOut((old) => [...old, m.id])
+    }))
+    if (token === runToken.current) setRunning(false)
   }
   useEffect(() => {
     const shared = location.hash.length > 1 ? decodeShare(location.hash.slice(1)) : null
@@ -60,7 +71,7 @@ export default function Page() {
     if (shared) { setFn(shared.fn); setTests(shared.tests); setScope(shared.scope); setBefore(shared.before); setManual(shared.manual); setEquivalent(shared.equivalent); run(shared) } else run()
   }, [])
   useEffect(() => { const h = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') run() }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h) })
-  const selectSpecimen = (s: Specimen) => { runToken.current++; setRunning(false); setSpecimen(s); setFn(s.fn); setTests(s.tests); setBefore(s.before ?? ''); setScope(s.scope ?? 'whole'); setManual(noManual); setMutants([]); setKilled([]); setRunScope(null); setError(''); setLastRun(null); setGenerated([]); setNotes({}); setEquivalent([]) }
+  const selectSpecimen = (s: Specimen) => { runToken.current++; runnerRef.current?.cancelPending(); setTimedOut([]); setRunning(false); setSpecimen(s); setFn(s.fn); setTests(s.tests); setBefore(s.before ?? ''); setScope(s.scope ?? 'whole'); setManual(noManual); setMutants([]); setKilled([]); setRunScope(null); setError(''); setLastRun(null); setGenerated([]); setNotes({}); setEquivalent([]) }
 
   // In Changed lines mode, clicking a line number adds that line to the scope or removes it by hand.
   const scopeExtensions = useMemo<Extension[]>(() => {
@@ -83,11 +94,13 @@ export default function Page() {
   const jsExtensions = useMemo(() => [javascript({ typescript: true })], [])
 
   // Write a test that kills this mutant, insert it only if it passes on the original and fails on the mutant, then rerun.
-  const addKillingTest = (m: Mutant) => {
-    if (!lastRun || running) return
+  const addKillingTest = async (m: Mutant) => {
+    if (!lastRun || running || generating) return
     const note = (text: string) => setNotes((n) => ({ ...n, [m.key]: text }))
     if (lastRun.fn !== fn || lastRun.tests !== tests) return note('The code changed since this run. Run mutants again first.')
-    const result = generateKillingTest(lastRun.fn, lastRun.tests, m)
+    setGenerating(m.key)
+    const result = await generateKillingTest(getRunner(), lastRun.fn, lastRun.tests, m)
+    setGenerating(null)
     if (!result.ok) return note(result.reason)
     setNotes((n) => Object.fromEntries(Object.entries(n).filter(([k]) => k !== m.key)))
     setGenerated((g) => [...g, m.key]); setTests(result.tests); run({ ...lastRun, tests: result.tests })
@@ -137,8 +150,8 @@ export default function Page() {
         {(mutants.length > 0 || noScopedMutants) && runScope && <div className="results">
           {runScope.mode === 'changed' && <p className="scope-summary">{scopeSummary(runScope)}</p>}
           {noScopedMutants ? <div className="score score-empty"><span className="field-label">Mutation score · changed lines only</span><p>No mutable code on the changed lines.</p></div> : <>
-            <div className="progress-line"><span>{running ? 'Testing specimens…' : 'Run complete'}</span><span>{killed.length} / {mutants.length} killed</span></div><div className="mutant-grid" role="list" aria-label="Mutant results">{mutants.map((m) => { const state = killed.includes(m.id) ? 'Killed' : isEquivalent(m) ? 'Equivalent' : !running ? 'Survived' : 'Pending'; const label = `${state}: ${m.operator}, line ${m.line}`; return <div key={m.id} role="listitem" aria-label={label} title={label} className={`mutant-cell ${state.toLowerCase()}`}>{state === 'Killed' ? <Check size={14} aria-hidden="true"/> : state === 'Survived' ? <Circle size={10} fill="currentColor" aria-hidden="true"/> : state === 'Equivalent' ? <Equal size={12} aria-hidden="true"/> : null}</div> })}</div>
-            <div className="grid-legend" aria-hidden="true"><span><i className="legend-swatch killed"><Check size={10}/></i>Killed</span><span><i className="legend-swatch survived"><Circle size={7} fill="currentColor"/></i>Survived</span><span><i className="legend-swatch equivalent"><Equal size={9}/></i>Equivalent</span><span><i className="legend-swatch"/>Pending</span></div>
+            <div className="progress-line"><span>{running ? 'Testing specimens…' : 'Run complete'}</span><span>{killed.length} / {mutants.length} killed</span></div><div className="mutant-grid" role="list" aria-label="Mutant results">{mutants.map((m) => { const state = timedOut.includes(m.id) ? 'Killed (timeout)' : killed.includes(m.id) ? 'Killed' : isEquivalent(m) ? 'Equivalent' : !running ? 'Survived' : 'Pending'; const label = `${state}: ${m.operator}, line ${m.line}`; return <div key={m.id} role="listitem" aria-label={label} title={label} className={`mutant-cell ${state === 'Killed (timeout)' ? 'killed timeout' : state.toLowerCase()}`}>{state === 'Killed (timeout)' ? <Clock size={13} aria-hidden="true"/> : state === 'Killed' ? <Check size={14} aria-hidden="true"/> : state === 'Survived' ? <Circle size={10} fill="currentColor" aria-hidden="true"/> : state === 'Equivalent' ? <Equal size={12} aria-hidden="true"/> : null}</div> })}</div>
+            <div className="grid-legend" aria-hidden="true"><span><i className="legend-swatch killed"><Check size={10}/></i>Killed</span><span><i className="legend-swatch killed"><Clock size={9}/></i>Killed (timeout)</span><span><i className="legend-swatch survived"><Circle size={7} fill="currentColor"/></i>Survived</span><span><i className="legend-swatch equivalent"><Equal size={9}/></i>Equivalent</span><span><i className="legend-swatch"/>Pending</span></div>
             <div className="score"><span className="field-label">Mutation score{runScope.mode === 'changed' ? ' · changed lines only' : ''}</span><strong>{score}<small>%</small></strong>{tally.equivalent > 0 && <em className="equivalent-count">({tally.equivalent} marked equivalent)</em>}<span>{score === 100 ? 'No survivors. Your tests are doing their job.' : 'The survivors are the gaps.'}</span></div>
           </>}
         </div>}
@@ -146,7 +159,7 @@ export default function Page() {
       <section className="report section-shell" id="report"><div className="section-heading"><div><p className="eyebrow">No. 02 / Findings</p><h2>Survivors report.</h2></div><div className="report-actions"><button className="text-button" onClick={copyLink}><Link2 size={15}/>{copied === 'link' ? 'Copied' : 'Copy link'}</button><button className="text-button" onClick={copyReport}><Copy size={15}/>{copied === 'report' ? 'Copied' : 'Copy report'}</button><button className="text-button" onClick={copyPrComment}><GitPullRequest size={15}/>{copied === 'pr' ? 'Copied' : 'Copy as PR comment'}</button></div></div>{cards.length === 0 ? <div className="empty"><Sparkles size={20}/><p>{noScopedMutants ? 'No mutable code on the changed lines.' : mutants.length ? 'All mutants killed. Excellent work.' : 'Run the lab to reveal what survived.'}</p></div> : <div className="survivor-list">{cards.map((m) => { const dead = killed.includes(m.id); return <motion.article layout key={m.key} className={`survivor-card ${selected === m.id ? 'selected' : ''} ${dead ? 'is-killed' : ''}`} onClick={() => setSelected(m.id)}>
           <div className="card-top"><span className="catalogue-no">MUT-{String(m.id + 1).padStart(2, '0')}</span>{dead ? <span className="killed-label"><Check size={14}/> KILLED</span> : <span className="survived-label"><Skull size={14}/> SURVIVED</span>}</div>
           <div className="card-main"><div><h3>{m.operator}</h3><p>Line {m.line} · {m.hint}</p></div><div className="diff"><span>{m.before}</span><b>→</b><strong>{m.after}</strong></div></div>
-          <div className="card-actions">{dead ? <span className="card-note">Killed by the generated test.</span> : <button className="text-button" disabled={running} onClick={(e) => { e.stopPropagation(); addKillingTest(m) }}><FlaskConical size={13}/>Add killing test</button>}{!dead && <button className="text-button" onClick={(e) => { e.stopPropagation(); toggleEquivalent(m) }}><Equal size={13}/>Mark as equivalent</button>}</div>
+          <div className="card-actions">{dead ? <span className="card-note">Killed by the generated test.</span> : <button className="text-button" disabled={running || !!generating} onClick={(e) => { e.stopPropagation(); addKillingTest(m) }}><FlaskConical size={13}/>{generating === m.key ? 'Writing test…' : 'Add killing test'}</button>}{!dead && <button className="text-button" onClick={(e) => { e.stopPropagation(); toggleEquivalent(m) }}><Equal size={13}/>Mark as equivalent</button>}</div>
           {notes[m.key] && <p className="card-note" role="status">{notes[m.key]}</p>}
         </motion.article> })}</div>}
         {marked.length > 0 && <div className="equivalent-list"><p className="field-label">Marked equivalent · excluded from the score</p><ul>{marked.map((m) => <li key={m.key}><span className="catalogue-no">MUT-{String(m.id + 1).padStart(2, '0')}</span><span>{m.operator}, line {m.line}</span><code>{m.before.trim()} → {m.after.trim()}</code><button className="text-button" onClick={() => toggleEquivalent(m)}><Undo2 size={13}/>Unmark</button></li>)}</ul></div>}</section>

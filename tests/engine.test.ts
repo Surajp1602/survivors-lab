@@ -1,29 +1,33 @@
-import { describe, expect, it } from 'vitest'
-import { createMutants, isKilled, noManual, planRun, runEngine, runTests, scoreOf, type RunConfig } from '@/lib/engine'
+import { afterAll, describe, expect, it } from 'vitest'
+import { createMutants, infiniteLoopMessage, noManual, planRun, runEngine, runTests, scoreOf, testMutant, type RunConfig } from '@/lib/engine'
 import { shortcutLabel } from '@/lib/platform'
 import { prepare } from '@/lib/source'
 import { cannotGenerate, generateKillingTest } from '@/lib/killing'
 import { decodeShare, encodeShare } from '@/lib/share'
 import { buildPrComment } from '@/lib/report'
 import { specimens } from '@/lib/presets'
+import { createNodeRunner } from './node-runner'
+
+const runner = createNodeRunner()
+afterAll(() => runner.dispose())
 
 const preset = (id: string) => specimens.find((s) => s.id === id)!
 const config = (id: string, scope: RunConfig['scope']): RunConfig => {
   const s = preset(id)
   return { fn: s.fn, tests: s.tests, scope, before: s.before ?? '', manual: noManual }
 }
-const survivorsOf = (r: ReturnType<typeof runEngine>) => r.plan.mutants.filter((m) => !r.killed.includes(m.id))
+const survivorsOf = (r: Awaited<ReturnType<typeof runEngine>>) => r.plan.mutants.filter((m) => !r.killed.includes(m.id))
 
 describe('presets', () => {
-  it('01 isAdult: 2 mutants, 0 killed', () => {
-    const r = runEngine(config('01', 'whole'))
+  it('01 isAdult: 2 mutants, 0 killed', async () => {
+    const r = await runEngine(runner, config('01', 'whole'))
     expect(r.error).toBeUndefined()
     expect(r.plan.mutants).toHaveLength(2)
     expect(r.killed).toHaveLength(0)
   })
 
-  it('04 changed lines: 2 of 7 mutants in scope, 1 killed, survivor is 90 -> 91 on line 3', () => {
-    const r = runEngine(config('04', 'changed'))
+  it('04 changed lines: 2 of 7 mutants in scope, 1 killed, survivor is 90 -> 91 on line 3', async () => {
+    const r = await runEngine(runner, config('04', 'changed'))
     expect(r.plan.total).toBe(7)
     expect(r.plan.mutants).toHaveLength(2)
     expect(r.killed).toHaveLength(1)
@@ -32,11 +36,38 @@ describe('presets', () => {
     expect(survivor).toMatchObject({ line: 3, before: '90', after: '91' })
   })
 
-  it('04 whole function: 7 mutants, 4 killed, 3 survivors', () => {
-    const r = runEngine(config('04', 'whole'))
+  it('04 whole function: 7 mutants, 4 killed, 3 survivors', async () => {
+    const r = await runEngine(runner, config('04', 'whole'))
     expect(r.plan.mutants).toHaveLength(7)
     expect(r.killed).toHaveLength(4)
     expect(survivorsOf(r)).toHaveLength(3)
+  })
+})
+
+describe('worker runner', () => {
+  const sumTo = 'function sumTo(n) {\n  let total = 0;\n  let i = 1;\n  while (i <= n) {\n    total = total + i;\n    i = i + 1;\n  }\n  return total;\n}'
+  const sumTests = "test('sums', () => expect(sumTo(4)).toBe(10));"
+
+  it('reports a mutant that loops forever as killed (timeout) within 2 seconds', async () => {
+    const plan = planRun({ fn: sumTo, tests: sumTests, scope: 'whole', before: '', manual: noManual })
+    const looping = plan.mutants.find((m) => m.line === 6 && m.after === ' - ')!
+    expect(looping.diff.added).toEqual(['    i = i - 1;'])
+    const started = Date.now()
+    expect(await testMutant(runner, looping, plan)).toEqual({ killed: true, timedOut: true, cancelled: false })
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  it('keeps going after a timeout: the respawned worker runs the rest of the mutants', async () => {
+    const r = await runEngine(runner, { fn: sumTo, tests: sumTests, scope: 'whole', before: '', manual: noManual })
+    expect(r.error).toBeUndefined()
+    const looping = r.plan.mutants.find((m) => m.line === 6 && m.after === ' - ')!
+    expect(r.timedOut).toEqual([looping.id])
+    expect(r.killed).toContain(looping.id)
+  })
+
+  it('stops with a clear message when the original code never finishes', async () => {
+    const r = await runEngine(runner, { fn: 'function spin() {\n  while (true) {}\n}', tests: "test('t', () => spin())", scope: 'whole', before: '', manual: noManual })
+    expect(r.error).toBe(infiniteLoopMessage)
   })
 })
 
@@ -68,7 +99,7 @@ describe('run shortcut badge', () => {
 describe('test syntax', () => {
   const fn = 'export function clamp(n, lo, hi) {\n  return Math.min(Math.max(n, lo), hi);\n}\nexport function tags(s) {\n  return s.split(",");\n}'
 
-  it('runs a describe/it suite using .not and toBeGreaterThan', () => {
+  it('runs a describe/it suite using .not and toBeGreaterThan', async () => {
     const tests = [
       "import { describe, it, expect, beforeEach } from 'vitest'",
       'describe("clamp", () => {',
@@ -79,16 +110,16 @@ describe('test syntax', () => {
       '  it("is not the input when capped", () => expect(clamp(50, 0, hi)).not.toBe(50))',
       '})',
     ].join('\n')
-    expect(runTests(fn, tests)).toEqual({ ok: true, count: 3 })
+    expect(await runTests(runner, fn, tests)).toEqual({ ok: true, count: 3 })
   })
 
-  it('reports the full test name and message on failure', () => {
-    const r = runTests(fn, 'describe("clamp", () => { it("caps", () => expect(clamp(50, 0, 10)).toBeGreaterThan(10)) })')
+  it('reports the full test name and message on failure', async () => {
+    const r = await runTests(runner, fn, 'describe("clamp", () => { it("caps", () => expect(clamp(50, 0, 10)).toBeGreaterThan(10)) })')
     expect(r.ok).toBe(false)
     expect(r.message).toBe('clamp › caps: expected 10 to be greater than 10')
   })
 
-  it('supports every listed matcher, plain and negated', () => {
+  it('supports every listed matcher, plain and negated', async () => {
     const tests = `
       test('matchers', () => {
         expect(tags('a,b')).toEqual(['a', 'b'])
@@ -106,10 +137,10 @@ describe('test syntax', () => {
         expect(1).toBeTruthy(); expect(0).toBeFalsy()
         expect(null).toBeNull(); expect(undefined).toBeUndefined(); expect(0).not.toBeNull()
       })`
-    expect(runTests(fn, tests)).toEqual({ ok: true, count: 1 })
+    expect(await runTests(runner, fn, tests)).toEqual({ ok: true, count: 1 })
   })
 
-  it('runs beforeEach hooks outermost first for every test', () => {
+  it('runs beforeEach hooks outermost first for every test', async () => {
     const tests = `
       const log = []
       beforeEach(() => log.push('outer'))
@@ -118,14 +149,14 @@ describe('test syntax', () => {
         it('one', () => expect(log).toEqual(['outer', 'inner']))
         it('two', () => expect(log).toEqual(['outer', 'inner', 'outer', 'inner']))
       })`
-    expect(runTests(fn, tests).ok).toBe(true)
+    expect((await runTests(runner, fn, tests)).ok).toBe(true)
   })
 
-  it('parses a TypeScript function and keeps line numbers', () => {
+  it('parses a TypeScript function and keeps line numbers', async () => {
     const ts = 'interface Order {\n  total: number\n}\nexport function fee(order: Order, express?: boolean): number {\n  if (order.total >= 500) return 0;\n  return express ? 90 : 40;\n}'
     const testsTs = 'it("fee", () => {\n  const o: { total: number } = { total: 600 }\n  expect(fee(o)).toBe(0)\n  expect(fee({ total: 1 }, true) as number).toBe(90)\n})'
     expect(prepare(ts).names).toEqual(['fee'])
-    expect(runTests(ts, testsTs)).toEqual({ ok: true, count: 1 })
+    expect(await runTests(runner, ts, testsTs)).toEqual({ ok: true, count: 1 })
     const boundary = createMutants(ts).find((m) => m.operator === 'relational boundary')
     expect(boundary).toMatchObject({ line: 5, before: ' >= ', after: ' > ' })
   })
@@ -143,49 +174,49 @@ describe('add killing test', () => {
   const mutantOf = (fn: string, tests: string, pick: (m: ReturnType<typeof createMutants>[number]) => boolean) =>
     planRun({ fn, tests, scope: 'whole', before: '', manual: noManual }).mutants.find(pick)!
 
-  it('kills the >= 500 boundary mutant by calling at exactly 500', () => {
+  it('kills the >= 500 boundary mutant by calling at exactly 500', async () => {
     const mutant = mutantOf(s.fn, s.tests, (m) => m.operator === 'relational boundary' && m.before === ' >= ')
-    expect(runEngine(config('04', 'whole')).killed).not.toContain(mutant.id)
-    const generated = generateKillingTest(s.fn, s.tests, mutant)
+    expect((await runEngine(runner, config('04', 'whole'))).killed).not.toContain(mutant.id)
+    const generated = await generateKillingTest(runner, s.fn, s.tests, mutant)
     expect(generated).toMatchObject({ ok: true, test: 'test("shippingFee at the 500 boundary", () => expect(shippingFee(500)).toBe(0));' })
     if (!generated.ok) return
-    expect(runTests(s.fn, generated.tests).ok).toBe(true)
+    expect((await runTests(runner, s.fn, generated.tests)).ok).toBe(true)
     const rerun = planRun({ fn: s.fn, tests: generated.tests, scope: 'whole', before: '', manual: noManual })
-    expect(isKilled(rerun.mutants.find((m) => m.key === mutant.key)!, rerun)).toBe(true)
+    expect((await testMutant(runner, rerun.mutants.find((m) => m.key === mutant.key)!, rerun)).killed).toBe(true)
   })
 
-  it('kills the returned 90 -> 91 literal with the inputs of the test that reaches it', () => {
+  it('kills the returned 90 -> 91 literal with the inputs of the test that reaches it', async () => {
     const mutant = mutantOf(s.fn, s.tests, (m) => m.before === '90')
-    const generated = generateKillingTest(s.fn, s.tests, mutant)
+    const generated = await generateKillingTest(runner, s.fn, s.tests, mutant)
     expect(generated).toMatchObject({ ok: true, test: 'test("shippingFee returns exactly 90", () => expect(shippingFee(100, true)).toBe(90));' })
   })
 
-  it('refuses when no reliable test exists', () => {
+  it('refuses when no reliable test exists', async () => {
     const fn = 'function f(x) {\n  if (x >= 0) return 1;\n  return 1;\n}'
     const mutant = mutantOf(fn, 'test("t", () => expect(f(5)).toBe(1))', (m) => m.operator === 'relational boundary')
-    expect(generateKillingTest(fn, 'test("t", () => expect(f(5)).toBe(1))', mutant)).toEqual({ ok: false, reason: cannotGenerate })
+    expect(await generateKillingTest(runner, fn, 'test("t", () => expect(f(5)).toBe(1))', mutant)).toEqual({ ok: false, reason: cannotGenerate })
   })
 })
 
 describe('equivalent mutants', () => {
-  it('leaves marked mutants out of the score', () => {
-    const r = runEngine(config('04', 'whole'))
+  it('leaves marked mutants out of the score', async () => {
+    const r = await runEngine(runner, config('04', 'whole'))
     expect(scoreOf(r.plan.mutants, r.killed, []).score).toBe(57)
     const boundary = survivorsOf(r).find((m) => m.operator === 'relational boundary')!
     expect(scoreOf(r.plan.mutants, r.killed, [boundary.key, 'stale:0:x'])).toEqual({ score: 67, counted: 6, killed: 4, equivalent: 1 })
   })
 
-  it('keeps mutant keys stable across runs and persists marks in the share link', () => {
-    const keys = () => runEngine(config('04', 'whole')).plan.mutants.map((m) => m.key)
-    expect(keys()).toEqual(keys())
+  it('keeps mutant keys stable across runs and persists marks in the share link', async () => {
+    const keys = async () => (await runEngine(runner, config('04', 'whole'))).plan.mutants.map((m) => m.key)
+    expect(await keys()).toEqual(await keys())
     const state = { fn: 'f', tests: 't', scope: 'whole' as const, before: '', manual: noManual, equivalent: ['2:13: > '] }
     expect(decodeShare(encodeShare(state))).toEqual(state)
   })
 })
 
 describe('PR comment', () => {
-  it('renders score, scope and each survivor as a diff block', () => {
-    const r = runEngine(config('04', 'changed'))
+  it('renders score, scope and each survivor as a diff block', async () => {
+    const r = await runEngine(runner, config('04', 'changed'))
     const comment = buildPrComment({
       name: 'shippingFee',
       tally: scoreOf(r.plan.mutants, r.killed, []),
@@ -207,3 +238,4 @@ describe('PR comment', () => {
     ].join('\n'))
   })
 })
+

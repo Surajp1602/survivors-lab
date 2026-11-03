@@ -1,4 +1,8 @@
-/* A small, synchronous subset of the Jest/Vitest API: describe, it/test, beforeEach and expect. */
+/*
+ * A small, synchronous subset of the Jest/Vitest API: describe, it/test, beforeEach and expect.
+ * This file runs inside the test workers, including Node's worker_threads in the unit tests, which load it
+ * with Node's built-in type stripping. Keep it free of imports and of non-erasable TypeScript syntax.
+ */
 
 export type SuiteResult = { ok: boolean; message?: string; count: number }
 type Check = { pass: boolean; message: string; negated: string }
@@ -120,4 +124,27 @@ export function runSuite(code: string, names: string[], testsCode: string): Suit
   } catch (e) {
     return { ok: false, count: 0, message: errorMessage(e) || 'Unknown failure' }
   }
+}
+
+export type EvalResult = { value?: unknown; throws?: true; uncloneable?: true; reached: boolean }
+
+/**
+ * Evaluate a call expression against fresh copies of the functions in `code`. Code may call
+ * `__survivorsReach()` to record that a probed statement ran. Values are checked to be cloneable
+ * so they can be posted back from a worker.
+ */
+export function evaluateCall(code: string, call: string): EvalResult {
+  let reached = false
+  try {
+    const value = new Function('__survivorsReach', `${code}\nreturn (${call})`)(() => { reached = true })
+    try { structuredClone(value) } catch { return { uncloneable: true, reached } }
+    return { value, reached }
+  } catch { return { throws: true, reached } }
+}
+
+export type Job = { kind: 'suite'; code: string; names: string[]; testsCode: string } | { kind: 'eval'; code: string; call: string }
+
+/** Entry point for a worker: one job in, one result out. */
+export function handleJob(job: Job): SuiteResult | EvalResult {
+  return job.kind === 'suite' ? runSuite(job.code, job.names, job.testsCode) : evaluateCall(job.code, job.call)
 }
