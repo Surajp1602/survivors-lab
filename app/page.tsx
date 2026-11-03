@@ -1,12 +1,13 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { ArrowUpRight, Check, Circle, Copy, FlaskConical, Link2, Play, ShieldAlert, Skull, Sparkles } from 'lucide-react'
 import { motion, AnimatePresence } from 'motion/react'
 import { javascript } from '@codemirror/lang-javascript'
 import { lineNumbers, gutter, GutterMarker, type EditorView, type BlockInfo, type Extension } from '@uiw/react-codemirror'
 import { changedLines, isKilled, noManual, planRun, runTests, scopedLines, type Manual, type Mutant, type RunConfig, type Scope } from '@/lib/engine'
+import { clientPlatform, shortcutLabel } from '@/lib/platform'
 import { specimens, type Specimen } from '@/lib/presets'
 import { decodeShare, encodeShare } from '@/lib/share'
 
@@ -14,6 +15,7 @@ const Editor = dynamic(() => import('@uiw/react-codemirror').then((m) => m.defau
 
 class ScopeBar extends GutterMarker { toDOM() { const el = document.createElement('span'); el.className = 'scope-bar'; return el } }
 const scopeBar = new ScopeBar()
+const noSubscribe = () => () => {}
 type RunScope = { mode: Scope; before: string; manual: Manual; lines: number[]; totalLines: number; kept: number; total: number }
 
 export default function Page() {
@@ -23,6 +25,7 @@ export default function Page() {
   const [runScope, setRunScope] = useState<RunScope | null>(null); const runToken = useRef(0)
   const score = mutants.length ? Math.round((killed.length / mutants.length) * 100) : 0; const survivors = mutants.filter((m) => !killed.includes(m.id))
   const totalLines = fn.split('\n').length
+  const shortcut = useSyncExternalStore(noSubscribe, () => shortcutLabel(clientPlatform()), () => 'Ctrl ↵')
   const diffSet = useMemo(() => changedLines(before, fn), [before, fn])
   const scoped = useMemo(() => scopedLines(before, fn, manual), [before, fn, manual])
   const noScopedMutants = runScope?.mode === 'changed' && runScope.kept === 0
@@ -103,7 +106,7 @@ export default function Page() {
           <div className={`editor-wrap ${changed ? 'scoping' : ''}`}><div className="editor-label"><span>Function</span><span>{changed ? 'After · JavaScript' : 'JavaScript'}</span></div><Editor value={fn} onChange={setFn} extensions={fnExtensions} theme="dark" basicSetup={{ lineNumbers: !changed }} /></div>
           <div className="editor-wrap tests-wrap"><div className="editor-label"><span>Tests</span><span>test / expect</span></div><Editor value={tests} onChange={setTests} extensions={jsExtensions} theme="dark" basicSetup={{ lineNumbers: true }} /></div>
         </div>
-        <div className="run-row"><button className="button" onClick={() => run()} disabled={running}><Play size={16} fill="currentColor"/>{running ? 'Running mutants…' : 'Run mutants'}<kbd>⌘ ↵</kbd></button><span className="run-note">Runs locally. Nothing leaves this browser.</span></div>
+        <div className="run-row"><button className="button" onClick={() => run()} disabled={running}><Play size={16} fill="currentColor"/>{running ? 'Running mutants…' : 'Run mutants'}<kbd>{shortcut}</kbd></button><span className="run-note">Runs locally. Nothing leaves this browser.</span></div>
         {error && <div className="error" role="alert"><ShieldAlert size={18}/>{error}</div>}
         {(mutants.length > 0 || noScopedMutants) && runScope && <div className="results">
           {runScope.mode === 'changed' && <p className="scope-summary">{scopeSummary(runScope)}</p>}

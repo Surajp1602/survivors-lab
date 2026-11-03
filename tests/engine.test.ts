@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createMutants, noManual, runEngine, type RunConfig } from '@/lib/engine'
+import { shortcutLabel } from '@/lib/platform'
 import { specimens } from '@/lib/presets'
 
 const preset = (id: string) => specimens.find((s) => s.id === id)!
@@ -48,5 +49,14 @@ describe('numeric literal hints', () => {
 
   it('treats an assigned value as an exact value', () => {
     expect(hints('function f() {\n  let limit = 3;\n  return limit;\n}')['3']).toBe("Assert the exact value; a range check like > 2 can't tell 3 from 4.")
+  })
+})
+
+describe('run shortcut badge', () => {
+  it('uses ⌘ on Mac and Ctrl elsewhere', () => {
+    expect(shortcutLabel('MacIntel')).toBe('⌘ ↵')
+    expect(shortcutLabel('macOS')).toBe('⌘ ↵')
+    expect(shortcutLabel('Win32')).toBe('Ctrl ↵')
+    expect(shortcutLabel('Linux x86_64')).toBe('Ctrl ↵')
   })
 })
