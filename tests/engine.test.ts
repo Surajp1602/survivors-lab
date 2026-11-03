@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { noManual, runEngine, type RunConfig } from '@/lib/engine'
+import { createMutants, noManual, runEngine, type RunConfig } from '@/lib/engine'
 import { specimens } from '@/lib/presets'
 
 const preset = (id: string) => specimens.find((s) => s.id === id)!
@@ -32,5 +32,21 @@ describe('presets', () => {
     expect(r.plan.mutants).toHaveLength(7)
     expect(r.killed).toHaveLength(4)
     expect(survivorsOf(r)).toHaveLength(3)
+  })
+})
+
+describe('numeric literal hints', () => {
+  const hints = (fn: string) => Object.fromEntries(createMutants(fn).filter((m) => m.operator === 'numeric literal').map((m) => [m.before, m.hint]))
+
+  it('treats a comparison operand as a threshold', () => {
+    expect(hints(preset('04').fn)['500']).toBe('Test the exact threshold and its neighbour.')
+  })
+
+  it('treats a returned value as an exact value', () => {
+    expect(hints(preset('04').fn)['90']).toBe("Assert the exact value; a range check like > 40 can't tell 90 from 91.")
+  })
+
+  it('treats an assigned value as an exact value', () => {
+    expect(hints('function f() {\n  let limit = 3;\n  return limit;\n}')['3']).toBe("Assert the exact value; a range check like > 2 can't tell 3 from 4.")
   })
 })

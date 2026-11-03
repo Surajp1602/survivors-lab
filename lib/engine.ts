@@ -1,5 +1,5 @@
 import { parse } from 'acorn'
-import { simple } from 'acorn-walk'
+import { ancestor, simple } from 'acorn-walk'
 import { diffLines } from 'diff'
 
 export type Scope = 'whole' | 'changed'
@@ -30,19 +30,49 @@ export function scopedLines(before: string, after: string, manual: Manual): numb
   return [...set].filter((n) => n >= 1 && n <= total).sort((a, b) => a - b)
 }
 
-export const operatorHints: Record<string, string> = { 'relational boundary': 'Add a test at exactly the boundary value.', arithmetic: 'Test the operation with a value that makes the result change.', equality: 'Test both equal and unequal values explicitly.', logical: 'Add a case where only one side of the condition is true.', 'boolean literal': 'Test the opposite boolean branch.', 'numeric literal': 'Test the exact threshold and its neighbor.', 'negated condition': 'Test the condition in both directions.', 'string literal': 'Assert the exact error or output string.' }
+export const operatorHints: Record<string, string> = { 'relational boundary': 'Add a test at exactly the boundary value.', arithmetic: 'Test the operation with a value that makes the result change.', equality: 'Test both equal and unequal values explicitly.', logical: 'Add a case where only one side of the condition is true.', 'boolean literal': 'Test the opposite boolean branch.', 'numeric literal': 'Test the exact threshold and its neighbour.', 'negated condition': 'Test the condition in both directions.', 'string literal': 'Assert the exact error or output string.' }
+
+const comparisonOps = ['<', '>', '<=', '>=', '===', '!==', '==', '!=']
+const isFunctionNode = (n: any) => ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(n.type)
+/** Value of a numeric literal, or of `-literal`. */
+const numberOf = (n: any): number | undefined => n?.type === 'Literal' && typeof n.value === 'number' ? n.value : n?.type === 'UnaryExpression' && n.operator === '-' ? (numberOf(n.argument) === undefined ? undefined : -numberOf(n.argument)!) : undefined
+
+/**
+ * A numeric literal compared against (`total >= 500`) is a threshold; one that is returned or assigned
+ * (`return 90`) is an exact value, where a loose range assertion can't see an off-by-one.
+ */
+function numericHint(node: any, ancestors: any[]): string {
+  const threshold = 'Test the exact threshold and its neighbour.'
+  let i = ancestors.length - 2
+  let child = node
+  if (ancestors[i]?.type === 'BinaryExpression' && comparisonOps.includes(ancestors[i].operator)) return threshold
+  // Look through `-90` and `cond ? 90 : 40` to the statement that consumes the value.
+  while (i >= 0 && ((ancestors[i].type === 'UnaryExpression' && ancestors[i].operator === '-') || (ancestors[i].type === 'ConditionalExpression' && ancestors[i].test !== child))) { child = ancestors[i]; i-- }
+  const parent = ancestors[i]
+  const consumed = (parent?.type === 'ReturnStatement' && parent.argument === child) || (parent?.type === 'AssignmentExpression' && parent.right === child) || (parent?.type === 'VariableDeclarator' && parent.init === child) || (parent?.type === 'ArrowFunctionExpression' && parent.body === child)
+  if (!consumed) return threshold
+  const sign = ancestors[ancestors.length - 2]?.type === 'UnaryExpression' ? -1 : 1
+  const value = sign * node.value
+  const mutated = sign * (node.value + 1)
+  // The realistic weak assertion only separates this value from a sibling return, e.g. `> 40` for `return 90` next to `return 40`.
+  const fnNode = [...ancestors].reverse().find(isFunctionNode)
+  const siblings: number[] = []
+  if (fnNode) simple(fnNode.body, { ReturnStatement(r: any) { const v = numberOf(r.argument); if (v !== undefined && v < value) siblings.push(v) } } as any)
+  const lower = siblings.length ? Math.max(...siblings) : value - 1
+  return `Assert the exact value; a range check like > ${lower} can't tell ${value} from ${mutated}.`
+}
 
 export function createMutants(source: string): Mutant[] {
   const found: Mutant[] = []
   let ast: any
   try { ast = parse(source, { ecmaVersion: 'latest', locations: true }) } catch { return [] }
-  const add = (node: any, operator: string, after: string) => { const before = source.slice(node.start, node.end); found.push({ id: found.length, operator, line: node.loc.start.line, before, after, hint: operatorHints[operator], source: source.slice(0, node.start) + after + source.slice(node.end) }) }
-  simple(ast as any, {
+  const add = (node: any, operator: string, after: string, hint = operatorHints[operator]) => { const before = source.slice(node.start, node.end); found.push({ id: found.length, operator, line: node.loc.start.line, before, after, hint, source: source.slice(0, node.start) + after + source.slice(node.end) }) }
+  ancestor(ast as any, {
     BinaryExpression(node: any) {
       const swaps: Record<string, string> = { '+': '-', '-': '+', '*': '/', '/': '*', '<': '<=', '<=': '<', '>': '>=', '>=': '>', '===': '!==', '!==': '===', '==': '!=', '!=': '==', '&&': '||', '||': '&&' }
       if (swaps[node.operator]) add({ ...node, start: node.left.end, end: node.right.start, loc: node.loc }, ['<','>','<=','>='].includes(node.operator) ? 'relational boundary' : ['&&','||'].includes(node.operator) ? 'logical' : ['===','!==','==','!='].includes(node.operator) ? 'equality' : 'arithmetic', ` ${swaps[node.operator]} `)
     },
-    Literal(node: any) { if (typeof node.value === 'boolean') add(node, 'boolean literal', String(!node.value)); else if (typeof node.value === 'number') add(node, 'numeric literal', String(node.value + 1)); else if (typeof node.value === 'string') add(node, 'string literal', '""') },
+    Literal(node: any, _: unknown, ancestors: any[]) { if (typeof node.value === 'boolean') add(node, 'boolean literal', String(!node.value)); else if (typeof node.value === 'number') add(node, 'numeric literal', String(node.value + 1), numericHint(node, ancestors)); else if (typeof node.value === 'string') add(node, 'string literal', '""') },
     IfStatement(node: any) { const test = source.slice(node.test.start, node.test.end); add({ ...node.test, end: node.test.end, start: node.test.start, loc: node.test.loc }, 'negated condition', `!(${test})`) },
   } as any)
   return found
