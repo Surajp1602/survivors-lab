@@ -22,7 +22,11 @@ const pairs: [text: string, background: string][] = [
   ['ink', 'surface-alt'], ['muted', 'surface-alt'], ['body', 'surface-alt'], ['accent-text', 'surface-alt'], ['added', 'surface-alt'],
   ['paper', 'ink'],
   ['on-accent', 'accent-strong'], ['on-accent', 'accent-strong-hover'],
-  ['editor-text', 'editor-bg'], ['editor-strong', 'editor-bg'],
+  ['editor-text', 'editor-bg'], ['editor-strong', 'editor-bg'], ['editor-text', 'editor-error'], ['editor-strong', 'editor-error'],
+  ['added', 'diff-orig-bg'], ['accent-text', 'diff-mut-bg'],
+  // Editor syntax colours (app/editor-theme.ts) on every editor surface.
+  ...['syn-text', 'syn-keyword', 'syn-string', 'syn-number', 'syn-function', 'syn-type', 'syn-comment', 'syn-operator', 'syn-invalid', 'editor-text', 'editor-strong']
+    .flatMap((text) => ['editor-bg', 'editor-active', 'editor-error'].map((bg): [string, string] => [text, bg])),
 ]
 
 describe('colour contrast (WCAG AA, 4.5:1)', () => {

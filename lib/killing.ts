@@ -1,4 +1,4 @@
-import { parse } from 'acorn'
+import { parse, tokenizer } from 'acorn'
 import { simple } from 'acorn-walk'
 import { runTests, type Mutant } from './engine'
 import { equals } from './harness'
@@ -24,22 +24,57 @@ function callSites(testsCode: string, names: string[]): CallSite[] {
   return sites.sort((a, b) => a.at - b.at)
 }
 
+export type Quote = "'" | '"'
+
+/** The quote most string literals in the tests already use; single quotes when there are none or it's a tie. */
+export function quoteStyle(testsSource: string): Quote {
+  let single = 0
+  let double = 0
+  try {
+    for (const token of tokenizer(testsSource, { ecmaVersion: 'latest' })) {
+      if (token.type.label !== 'string') continue
+      if (testsSource[token.start] === "'") single++
+      else double++
+    }
+  } catch {
+    // TypeScript syntax the tokenizer rejects: fall back to counting quote characters.
+    single = (testsSource.match(/'/g) ?? []).length
+    double = (testsSource.match(/"/g) ?? []).length
+  }
+  return double > single ? '"' : "'"
+}
+
+export function quoteString(s: string, q: Quote): string {
+  const json = JSON.stringify(s)
+  return q === '"' ? json : `'${json.slice(1, -1).replace(/\\"/g, '"').replace(/'/g, "\\'")}'`
+}
+
 /** Source literal for a primitive, or undefined when it has none. */
-function literal(v: unknown): string | undefined {
+function literal(v: unknown, q: Quote): string | undefined {
   if (typeof v === 'number') return Object.is(v, -0) ? '-0' : String(v)
-  if (typeof v === 'string') return JSON.stringify(v)
+  if (typeof v === 'string') return quoteString(v, q)
   if (typeof v === 'bigint') return `${v}n`
   if (typeof v === 'boolean' || v === null || v === undefined) return String(v)
   return undefined
 }
 
-function assertion(v: unknown, exactOnly: boolean): string | undefined {
-  const lit = literal(v)
+/** JavaScript source for a JSON-safe value, using the tests' quote style for strings and keys. */
+function source(v: unknown, q: Quote): string {
+  if (Array.isArray(v)) return `[${v.map((x) => source(x, q)).join(', ')}]`
+  if (v && typeof v === 'object') {
+    const entries = Object.entries(v).map(([k, x]) => `${/^[A-Za-z_$][\w$]*$/.test(k) ? k : quoteString(k, q)}: ${source(x, q)}`)
+    return entries.length ? `{ ${entries.join(', ')} }` : '{}'
+  }
+  return literal(v, q)!
+}
+
+function assertion(v: unknown, exactOnly: boolean, q: Quote): string | undefined {
+  const lit = literal(v, q)
   if (lit !== undefined) return `toBe(${lit})`
   if (exactOnly || typeof v !== 'object') return undefined
   try {
     const json = JSON.stringify(v)
-    return json !== undefined && equals(JSON.parse(json), v) ? `toEqual(${json})` : undefined
+    return json !== undefined && equals(JSON.parse(json), v) ? `toEqual(${source(JSON.parse(json), q)})` : undefined
   } catch { return undefined }
 }
 
@@ -50,7 +85,7 @@ async function candidates(runner: Runner, fn: Prepared, testsCode: string, mutan
   const out: Candidate[] = []
   if (target.kind === 'boundary') {
     // Call at exactly K, borrowing the other arguments from an existing call when there is one.
-    const k = literal(target.value)!
+    const k = literal(target.value, "'")!
     for (const base of [...sites.filter((s) => s.callee === target.fn).map((s) => s.args), []]) {
       const args = [...base]
       while (args.length <= target.param) args.push('undefined')
@@ -67,7 +102,7 @@ async function candidates(runner: Runner, fn: Prepared, testsCode: string, mutan
       const call = `${site.callee}(${site.args.join(', ')})`
       if (out.some((c) => c.call === call)) continue
       const r = await runner.evaluate(probe, call)
-      if (r.reached && !r.throws && !r.uncloneable) out.push({ call, value: r.value, title: `${site.callee} returns exactly ${literal(r.value) ?? 'the original value'}` })
+      if (r.reached && !r.throws && !r.uncloneable) out.push({ call, value: r.value, title: `${site.callee} returns exactly ${literal(r.value, '"') ?? 'the original value'}` })
     }
   }
   return out
@@ -84,10 +119,11 @@ export async function generateKillingTest(runner: Runner, fnSource: string, test
   let fn: Prepared
   let testsCode: string
   try { fn = prepare(fnSource); testsCode = prepare(testsSource).code } catch { return fail }
+  const quote = quoteStyle(testsSource)
   for (const c of await candidates(runner, fn, testsCode, mutant)) {
-    const matcher = assertion(c.value, mutant.target.kind === 'return')
+    const matcher = assertion(c.value, mutant.target.kind === 'return', quote)
     if (!matcher) continue
-    const test = `test(${JSON.stringify(c.title)}, () => expect(${c.call}).${matcher});`
+    const test = `test(${quoteString(c.title, quote)}, () => expect(${c.call}).${matcher});`
     const tests = `${testsSource.replace(/\s+$/, '')}\n${test}`
     const onOriginal = await runTests(runner, fnSource, tests)
     if (!onOriginal.ok) continue
