@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { createMutants, noManual, runEngine, type RunConfig } from '@/lib/engine'
+import { createMutants, noManual, runEngine, runTests, type RunConfig } from '@/lib/engine'
 import { shortcutLabel } from '@/lib/platform'
+import { prepare } from '@/lib/source'
 import { specimens } from '@/lib/presets'
 
 const preset = (id: string) => specimens.find((s) => s.id === id)!
@@ -58,5 +59,78 @@ describe('run shortcut badge', () => {
     expect(shortcutLabel('macOS')).toBe('⌘ ↵')
     expect(shortcutLabel('Win32')).toBe('Ctrl ↵')
     expect(shortcutLabel('Linux x86_64')).toBe('Ctrl ↵')
+  })
+})
+
+describe('test syntax', () => {
+  const fn = 'export function clamp(n, lo, hi) {\n  return Math.min(Math.max(n, lo), hi);\n}\nexport function tags(s) {\n  return s.split(",");\n}'
+
+  it('runs a describe/it suite using .not and toBeGreaterThan', () => {
+    const tests = [
+      "import { describe, it, expect, beforeEach } from 'vitest'",
+      'describe("clamp", () => {',
+      '  let hi',
+      '  beforeEach(() => { hi = 10 })',
+      '  it("caps at hi", () => expect(clamp(50, 0, hi)).not.toBeGreaterThan(hi))',
+      '  it("keeps values inside", () => expect(clamp(5, 0, hi)).toBeGreaterThan(4))',
+      '  it("is not the input when capped", () => expect(clamp(50, 0, hi)).not.toBe(50))',
+      '})',
+    ].join('\n')
+    expect(runTests(fn, tests)).toEqual({ ok: true, count: 3 })
+  })
+
+  it('reports the full test name and message on failure', () => {
+    const r = runTests(fn, 'describe("clamp", () => { it("caps", () => expect(clamp(50, 0, 10)).toBeGreaterThan(10)) })')
+    expect(r.ok).toBe(false)
+    expect(r.message).toBe('clamp › caps: expected 10 to be greater than 10')
+  })
+
+  it('supports every listed matcher, plain and negated', () => {
+    const tests = `
+      test('matchers', () => {
+        expect(tags('a,b')).toEqual(['a', 'b'])
+        expect({ a: 1, b: undefined }).toEqual({ a: 1 })
+        expect({ a: 1, b: undefined }).not.toStrictEqual({ a: 1 })
+        expect(tags('a,b')).toStrictEqual(['a', 'b'])
+        expect(clamp(-5, 0, 10)).toBeLessThan(1)
+        expect(tags('a,b')).toContain('b')
+        expect('a,b').not.toContain('c')
+        expect(() => clamp.call(null, 1, 2, 3, null.x)).toThrow()
+        expect(() => { throw new RangeError('bad pct') }).toThrow('bad')
+        expect(() => { throw new RangeError('bad pct') }).toThrow(/pct$/)
+        expect(() => { throw new RangeError('bad pct') }).toThrow(RangeError)
+        expect(() => 1).not.toThrow()
+        expect(1).toBeTruthy(); expect(0).toBeFalsy()
+        expect(null).toBeNull(); expect(undefined).toBeUndefined(); expect(0).not.toBeNull()
+      })`
+    expect(runTests(fn, tests)).toEqual({ ok: true, count: 1 })
+  })
+
+  it('runs beforeEach hooks outermost first for every test', () => {
+    const tests = `
+      const log = []
+      beforeEach(() => log.push('outer'))
+      describe('d', () => {
+        beforeEach(() => log.push('inner'))
+        it('one', () => expect(log).toEqual(['outer', 'inner']))
+        it('two', () => expect(log).toEqual(['outer', 'inner', 'outer', 'inner']))
+      })`
+    expect(runTests(fn, tests).ok).toBe(true)
+  })
+
+  it('parses a TypeScript function and keeps line numbers', () => {
+    const ts = 'interface Order {\n  total: number\n}\nexport function fee(order: Order, express?: boolean): number {\n  if (order.total >= 500) return 0;\n  return express ? 90 : 40;\n}'
+    const testsTs = 'it("fee", () => {\n  const o: { total: number } = { total: 600 }\n  expect(fee(o)).toBe(0)\n  expect(fee({ total: 1 }, true) as number).toBe(90)\n})'
+    expect(prepare(ts).names).toEqual(['fee'])
+    expect(runTests(ts, testsTs)).toEqual({ ok: true, count: 1 })
+    const boundary = createMutants(ts).find((m) => m.operator === 'relational boundary')
+    expect(boundary).toMatchObject({ line: 5, before: ' >= ', after: ' > ' })
+  })
+
+  it('leaves every preset unchanged when stripping types', () => {
+    for (const s of specimens) {
+      expect(prepare(s.fn).code).toBe(s.fn)
+      expect(prepare(s.tests).code).toBe(s.tests)
+    }
   })
 })

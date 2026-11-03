@@ -1,6 +1,8 @@
 import { parse } from 'acorn'
 import { ancestor, simple } from 'acorn-walk'
 import { diffLines } from 'diff'
+import { runSuite } from './harness'
+import { prepare } from './source'
 
 export type Scope = 'whole' | 'changed'
 export type Manual = { add: number[]; remove: number[] }
@@ -62,10 +64,12 @@ function numericHint(node: any, ancestors: any[]): string {
   return `Assert the exact value; a range check like > ${lower} can't tell ${value} from ${mutated}.`
 }
 
-export function createMutants(source: string): Mutant[] {
+/** Mutants of `input` (JavaScript or TypeScript). Each mutant's `source` is runnable JavaScript. */
+export function createMutants(input: string): Mutant[] {
   const found: Mutant[] = []
   let ast: any
-  try { ast = parse(source, { ecmaVersion: 'latest', locations: true }) } catch { return [] }
+  let source: string
+  try { source = prepare(input).code; ast = parse(source, { ecmaVersion: 'latest', locations: true }) } catch { return [] }
   const add = (node: any, operator: string, after: string, hint = operatorHints[operator]) => { const before = source.slice(node.start, node.end); found.push({ id: found.length, operator, line: node.loc.start.line, before, after, hint, source: source.slice(0, node.start) + after + source.slice(node.end) }) }
   ancestor(ast as any, {
     BinaryExpression(node: any) {
@@ -80,33 +84,32 @@ export function createMutants(source: string): Mutant[] {
 
 export function runTests(fnSource: string, testsSource: string): { ok: boolean; message?: string } {
   try {
-    const fn = new Function(`${fnSource}\nreturn {${((fnSource.match(/function\s+(\w+)/) || [])[1] || '')}}`)()
-    const test = (name: string, cb: () => void) => { try { cb() } catch (e: any) { throw new Error(`${name}: ${e.message}`) } }
-    const deep = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b)
-    const expect = (value: any) => ({ toBe: (x: any) => { if (value !== x) throw new Error(`expected ${String(x)}, received ${String(value)}`) }, toEqual: (x: any) => { if (!deep(value, x)) throw new Error('values are not equal') }, toThrow: () => { if (typeof value !== 'function') throw new Error('expected a function'); let threw = false; try { value() } catch { threw = true } if (!threw) throw new Error('expected function to throw') }, toBeTruthy: () => { if (!value) throw new Error('expected truthy value') }, toBeFalsy: () => { if (value) throw new Error('expected falsy value') } })
-    new Function(...Object.keys(fn), 'test', 'expect', testsSource)(...Object.values(fn), test, expect)
-    return { ok: true }
+    const fn = prepare(fnSource)
+    return runSuite(fn.code, fn.names, prepare(testsSource).code)
   } catch (e: any) { return { ok: false, message: e.message || 'Unknown failure' } }
 }
 
-export type RunPlan = { mutants: Mutant[]; lines: number[]; total: number }
+export type RunPlan = { mutants: Mutant[]; lines: number[]; total: number; names: string[]; testsCode: string }
 
 /** Mutants for one run, scoped and re-numbered. Only the mutation sites are scoped; every mutant still faces the full test suite. */
 export function planRun(cfg: RunConfig): RunPlan {
   const all = createMutants(cfg.fn)
+  let names: string[] = []
+  let testsCode = ''
+  try { names = prepare(cfg.fn).names; testsCode = prepare(cfg.tests).code } catch { /* runTests reports syntax errors before a plan is used */ }
   const lines = cfg.scope === 'changed' ? scopedLines(cfg.before, cfg.fn, cfg.manual) : []
   const inScope = cfg.scope === 'changed' ? all.filter((m) => lines.includes(m.line)) : all
-  return { mutants: inScope.map((m, i) => ({ ...m, id: i })), lines, total: all.length }
+  return { mutants: inScope.map((m, i) => ({ ...m, id: i })), lines, total: all.length, names, testsCode }
 }
 
-export const isKilled = (m: Mutant, tests: string) => !runTests(m.source, tests).ok
+export const isKilled = (m: Mutant, plan: RunPlan) => !runSuite(m.source, plan.names, plan.testsCode).ok
 
 export type EngineResult = { error?: string; plan: RunPlan; killed: number[] }
 
 /** Synchronous whole run: check the original passes, then test every in-scope mutant. */
 export function runEngine(cfg: RunConfig): EngineResult {
   const original = runTests(cfg.fn, cfg.tests)
-  if (!original.ok) return { error: original.message, plan: { mutants: [], lines: [], total: 0 }, killed: [] }
+  if (!original.ok) return { error: original.message, plan: { mutants: [], lines: [], total: 0, names: [], testsCode: '' }, killed: [] }
   const plan = planRun(cfg)
-  return { plan, killed: plan.mutants.filter((m) => isKilled(m, cfg.tests)).map((m) => m.id) }
+  return { plan, killed: plan.mutants.filter((m) => isKilled(m, plan)).map((m) => m.id) }
 }

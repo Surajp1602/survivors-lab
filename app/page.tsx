@@ -35,13 +35,14 @@ export default function Page() {
     setError(''); setSelected(null)
     const original = runTests(cfg.fn, cfg.tests)
     if (!original.ok) { setRunning(false); setError(`Your tests fail on the original code — fix them before hunting mutants. ${original.message}`); return }
-    const { mutants: next, lines, total } = planRun(cfg)
+    const plan = planRun(cfg)
+    const { mutants: next, lines, total } = plan
     setRunScope({ mode: cfg.scope, before: cfg.before, manual: cfg.manual, lines, totalLines: cfg.fn.split('\n').length, kept: next.length, total })
     setMutants(next); setKilled([]); setRunning(true)
     for (const m of next) {
       await new Promise((r) => setTimeout(r, 110))
       if (token !== runToken.current) return
-      if (isKilled(m, cfg.tests)) setKilled((old) => [...old, m.id])
+      if (isKilled(m, plan)) setKilled((old) => [...old, m.id])
     }
     setRunning(false)
   }
@@ -71,8 +72,8 @@ export default function Page() {
       gutter({ class: 'cm-scope-gutter', lineMarker: (view, block) => (inScope.has(view.state.doc.lineAt(block.from).number) ? scopeBar : null), initialSpacer: () => scopeBar, domEventHandlers: { mousedown: toggle } }),
     ]
   }, [scope, scoped, diffSet])
-  const fnExtensions = useMemo(() => [javascript(), ...scopeExtensions], [scopeExtensions])
-  const jsExtensions = useMemo(() => [javascript()], [])
+  const fnExtensions = useMemo(() => [javascript({ typescript: true }), ...scopeExtensions], [scopeExtensions])
+  const jsExtensions = useMemo(() => [javascript({ typescript: true })], [])
 
   const scopeSummary = (r: RunScope) => `Mutating ${r.lines.length} of ${r.totalLines} lines · ${r.kept} of ${r.total} mutants`
   const copyLink = async () => { await navigator.clipboard.writeText(`${location.origin}${location.pathname}#${encodeShare({ fn, tests, scope, before, manual })}`); setCopied('link'); setTimeout(() => setCopied(''), 1600) }
@@ -103,8 +104,8 @@ export default function Page() {
         </div>
         <div className={`editors ${changed ? 'with-before' : ''}`}>
           {changed && <div className="editor-wrap"><div className="editor-label"><span>Before</span><span>Optional · base version</span></div><Editor value={before} onChange={setBefore} extensions={jsExtensions} theme="dark" basicSetup={{ lineNumbers: true }} placeholder="Paste the pre-PR version, or click line numbers in the Function editor to scope by hand." /></div>}
-          <div className={`editor-wrap ${changed ? 'scoping' : ''}`}><div className="editor-label"><span>Function</span><span>{changed ? 'After · JavaScript' : 'JavaScript'}</span></div><Editor value={fn} onChange={setFn} extensions={fnExtensions} theme="dark" basicSetup={{ lineNumbers: !changed }} /></div>
-          <div className="editor-wrap tests-wrap"><div className="editor-label"><span>Tests</span><span>test / expect</span></div><Editor value={tests} onChange={setTests} extensions={jsExtensions} theme="dark" basicSetup={{ lineNumbers: true }} /></div>
+          <div className={`editor-wrap ${changed ? 'scoping' : ''}`}><div className="editor-label"><span>Function</span><span>{changed ? 'After · JS / TS' : 'JS / TS'}</span></div><Editor value={fn} onChange={setFn} extensions={fnExtensions} theme="dark" basicSetup={{ lineNumbers: !changed }} /></div>
+          <div className="editor-wrap tests-wrap"><div className="editor-label"><span>Tests</span><span>describe / it / expect</span></div><Editor value={tests} onChange={setTests} extensions={jsExtensions} theme="dark" basicSetup={{ lineNumbers: true }} /></div>
         </div>
         <div className="run-row"><button className="button" onClick={() => run()} disabled={running}><Play size={16} fill="currentColor"/>{running ? 'Running mutants…' : 'Run mutants'}<kbd>{shortcut}</kbd></button><span className="run-note">Runs locally. Nothing leaves this browser.</span></div>
         {error && <div className="error" role="alert"><ShieldAlert size={18}/>{error}</div>}
