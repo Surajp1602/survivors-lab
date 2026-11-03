@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import { javascript } from '@codemirror/lang-javascript'
 import { Decoration, EditorView, lineNumbers, gutter, GutterMarker, type BlockInfo, type Extension } from '@uiw/react-codemirror'
 import { CountUp } from './count-up'
+import { editorTheme } from './editor-theme'
 import { HeroSpecimen } from './hero-specimen'
 import { createBrowserRunner } from '@/lib/browser-runner'
 import { fieldGuide, marquee } from '@/lib/catalogue'
@@ -25,6 +26,7 @@ const Editor = dynamic(() => import('@uiw/react-codemirror').then((m) => m.defau
 class ScopeBar extends GutterMarker { toDOM() { const el = document.createElement('span'); el.className = 'scope-bar'; return el } }
 const scopeBar = new ScopeBar()
 const noSubscribe = () => () => {}
+const named = (label: string) => EditorView.contentAttributes.of({ 'aria-label': `${label} editor` })
 /** Highlight the line a syntax error points at. */
 const errorLine = (line: number | null): Extension[] => line === null ? [] : [EditorView.decorations.of((view) => Decoration.set([Decoration.line({ class: 'cm-error-line' }).range(view.state.doc.line(Math.min(line, view.state.doc.lines)).from)]))]
 /** Original line over mutant line, common indentation removed, changed token marked. */
@@ -114,9 +116,9 @@ export default function Page() {
   }, [scope, scoped, diffSet])
   const fnErrorLine = problem?.editor === 'Function' ? problem.line : null
   const testsErrorLine = problem?.editor === 'Tests' ? problem.line : null
-  const fnExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping, ...scopeExtensions, ...errorLine(fnErrorLine)], [scopeExtensions, fnErrorLine])
-  const testsExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping, ...errorLine(testsErrorLine)], [testsErrorLine])
-  const jsExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping], [])
+  const fnExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping, named('Function'), ...scopeExtensions, ...errorLine(fnErrorLine)], [scopeExtensions, fnErrorLine])
+  const testsExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping, named('Tests'), ...errorLine(testsErrorLine)], [testsErrorLine])
+  const beforeExtensions = useMemo(() => [javascript({ typescript: true }), EditorView.lineWrapping, named('Before (base version)')], [])
 
   // Write a test that kills this mutant, insert it only if it passes on the original and fails on the mutant, then rerun.
   const addKillingTest = async (m: Mutant) => {
@@ -167,9 +169,9 @@ export default function Page() {
           {changed && <span className="scope-hint">{scoped.length} of {totalLines} lines in scope · click line numbers to add or remove</span>}
         </div>
         <div className={`editors ${changed ? 'with-before' : ''}`}>
-          {changed && <div className="editor-wrap"><div className="editor-label"><span>Before</span><span>Optional · base version</span></div><Editor value={before} onChange={setBefore} extensions={jsExtensions} theme="dark" basicSetup={{ lineNumbers: true }} placeholder="Paste the pre-PR version, or click line numbers in the Function editor to scope by hand." /></div>}
-          <div className={`editor-wrap ${changed ? 'scoping' : ''}`}><div className="editor-label"><span>Function</span><span>{changed ? 'After · JS / TS' : 'JS / TS'}</span></div><Editor value={fn} onChange={setFn} extensions={fnExtensions} theme="dark" basicSetup={{ lineNumbers: !changed }} /></div>
-          <div className="editor-wrap tests-wrap"><div className="editor-label"><span>Tests</span><span>describe / it / expect</span></div><Editor value={tests} onChange={setTests} extensions={testsExtensions} theme="dark" basicSetup={{ lineNumbers: true }} /></div>
+          {changed && <div className="editor-wrap"><div className="editor-label"><span>Before</span><span>Optional · base version</span></div><Editor value={before} onChange={setBefore} extensions={beforeExtensions} theme={editorTheme} basicSetup={{ lineNumbers: true }} placeholder="Paste the pre-PR version, or click line numbers in the Function editor to scope by hand." /></div>}
+          <div className={`editor-wrap ${changed ? 'scoping' : ''}`}><div className="editor-label"><span>Function</span><span>{changed ? 'After · JS / TS' : 'JS / TS'}</span></div><Editor value={fn} onChange={setFn} extensions={fnExtensions} theme={editorTheme} basicSetup={{ lineNumbers: !changed }} /></div>
+          <div className="editor-wrap tests-wrap"><div className="editor-label"><span>Tests</span><span>describe / it / expect</span></div><Editor value={tests} onChange={setTests} extensions={testsExtensions} theme={editorTheme} basicSetup={{ lineNumbers: true }} /></div>
         </div>
         <div className="run-row"><button className="button" onClick={() => run()} disabled={running}><Play size={16} fill="currentColor"/>{running ? 'Running mutants…' : 'Run mutants'}<kbd>{shortcut}</kbd></button><span className="run-note">Runs locally. Nothing leaves this browser.</span></div>
         {error && <div className="error" role="alert"><ShieldAlert size={18}/>{error}</div>}
@@ -179,7 +181,7 @@ export default function Page() {
           {noScopedMutants ? <div className="score score-empty"><span className="field-label">Mutation score · changed lines only</span><p>No mutable code on the changed lines.</p></div> : <>
             <div className="progress-line"><span>{running ? 'Testing specimens…' : 'Run complete'}</span><span>{progressLabel(tally)}</span></div><div className="mutant-grid" role="list" aria-label="Mutant results">{mutants.map((m) => { const state = timedOut.includes(m.id) ? 'Killed (timeout)' : killed.includes(m.id) ? 'Killed' : isEquivalent(m) ? 'Equivalent' : !running ? 'Survived' : 'Pending'; const label = `${state}: ${m.operator}, line ${m.line}`; return <div key={m.id} role="listitem" aria-label={label} title={label} className={`mutant-cell ${state === 'Killed (timeout)' ? 'killed timeout' : state.toLowerCase()}`}>{state === 'Killed (timeout)' ? <Clock size={13} aria-hidden="true"/> : state === 'Killed' ? <Check size={14} aria-hidden="true"/> : state === 'Survived' ? <Circle size={10} fill="currentColor" aria-hidden="true"/> : state === 'Equivalent' ? <Equal size={12} aria-hidden="true"/> : null}</div> })}</div>
             <div className="grid-legend" aria-hidden="true"><span><i className="legend-swatch killed"><Check size={10}/></i>Killed</span><span><i className="legend-swatch killed"><Clock size={9}/></i>Killed (timeout)</span><span><i className="legend-swatch survived"><Circle size={7} fill="currentColor"/></i>Survived</span><span><i className="legend-swatch equivalent"><Equal size={9}/></i>Equivalent</span><span><i className="legend-swatch"/>Pending</span></div>
-            <div className="score"><span className="field-label">Mutation score{runScope.mode === 'changed' ? ' · changed lines only' : ''}</span><strong className="score-value" aria-label={`${score}%`}><CountUp value={score}/><small aria-hidden="true">%</small></strong><div className="score-meta">{tally.equivalent > 0 && <em>({tally.equivalent} marked equivalent)</em>}<span>{score === 100 ? 'No survivors. Your tests are doing their job.' : 'The survivors are the gaps.'}</span></div></div>
+            <div className="score"><span className="field-label">Mutation score{runScope.mode === 'changed' ? ' · changed lines only' : ''}</span><strong className="score-value"><span className="sr-only">{score}%</span><CountUp value={score}/><small aria-hidden="true">%</small></strong><div className="score-meta">{tally.equivalent > 0 && <em>({tally.equivalent} marked equivalent)</em>}<span>{score === 100 ? 'No survivors. Your tests are doing their job.' : 'The survivors are the gaps.'}</span></div></div>
           </>}
         </div>}
       </section>
