@@ -12,7 +12,7 @@ export type Manual = { add: number[]; remove: number[] }
  */
 export type MutantTarget = { kind: 'boundary'; fn: string; param: number; value: number } | { kind: 'return'; start: number; end: number }
 /** `key` is stable across runs of the same code (line, column, replacement), unlike the per-run `id`. */
-export type Mutant = { id: number; key: string; operator: string; line: number; before: string; after: string; hint: string; source: string; target?: MutantTarget }
+export type Mutant = { id: number; key: string; operator: string; line: number; before: string; after: string; hint: string; source: string; target?: MutantTarget; diff: { removed: string[]; added: string[] } }
 export type RunConfig = { fn: string; tests: string; scope: Scope; before: string; manual: Manual }
 
 export const noManual: Manual = { add: [], remove: [] }
@@ -102,7 +102,12 @@ export function createMutants(input: string): Mutant[] {
   const add = (node: any, operator: string, after: string, hint = operatorHints[operator], target?: MutantTarget) => {
     const column = node.start - source.lastIndexOf('\n', node.start - 1) - 1
     const line = node.loc.start.line
-    found.push({ id: found.length, key: `${line}:${column}:${after}`, operator, line, before: source.slice(node.start, node.end), after, hint, source: source.slice(0, node.start) + after + source.slice(node.end), target })
+    // Whole source lines around the mutation, before and after, for diff output.
+    const lineStart = source.lastIndexOf('\n', node.start - 1) + 1
+    const nextBreak = source.indexOf('\n', node.end)
+    const lineEnd = nextBreak === -1 ? source.length : nextBreak
+    const diff = { removed: source.slice(lineStart, lineEnd).split('\n'), added: (source.slice(lineStart, node.start) + after + source.slice(node.end, lineEnd)).split('\n') }
+    found.push({ id: found.length, key: `${line}:${column}:${after}`, operator, line, before: source.slice(node.start, node.end), after, hint, source: source.slice(0, node.start) + after + source.slice(node.end), target, diff })
   }
   const returned = (node: any, ancestors: any[]): MutantTarget | undefined => {
     const { parent, child } = consumerOf(node, ancestors)

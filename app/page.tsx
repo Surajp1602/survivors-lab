@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { ArrowUpRight, Check, Circle, Copy, Equal, FlaskConical, Link2, Play, ShieldAlert, Skull, Sparkles, Undo2 } from 'lucide-react'
+import { ArrowUpRight, Check, Circle, Copy, Equal, GitPullRequest, FlaskConical, Link2, Play, ShieldAlert, Skull, Sparkles, Undo2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'motion/react'
 import { javascript } from '@codemirror/lang-javascript'
 import { lineNumbers, gutter, GutterMarker, type EditorView, type BlockInfo, type Extension } from '@uiw/react-codemirror'
@@ -10,6 +10,7 @@ import { changedLines, isKilled, noManual, planRun, runTests, scopedLines, score
 import { clientPlatform, shortcutLabel } from '@/lib/platform'
 import { specimens, type Specimen } from '@/lib/presets'
 import { generateKillingTest } from '@/lib/killing'
+import { buildPrComment } from '@/lib/report'
 import { decodeShare, encodeShare } from '@/lib/share'
 
 const Editor = dynamic(() => import('@uiw/react-codemirror').then((m) => m.default), { ssr: false })
@@ -109,6 +110,11 @@ export default function Page() {
     const text = `# Survivors report — ${specimen.name}\n\n${scopeText}\n\n${scoreText}\n\n${survivors.map((m) => `- ${m.operator}, line ${m.line}: ${m.before} → ${m.after}\n  ${m.hint}`).join('\n')}${marked.length ? `\n\nMarked equivalent:\n${marked.map((m) => `- ${m.operator}, line ${m.line}: ${m.before} → ${m.after}`).join('\n')}` : ''}`
     await navigator.clipboard.writeText(text); setCopied('report'); setTimeout(() => setCopied(''), 1600)
   }
+  const copyPrComment = async () => {
+    const r = runScope
+    const text = buildPrComment({ name: specimen.name, tally: noScopedMutants ? null : tally, scope: !r || r.mode === 'whole' ? { mode: 'whole' } : { mode: 'changed', lines: r.lines, kept: r.kept, total: r.total }, survivors })
+    await navigator.clipboard.writeText(text); setCopied('pr'); setTimeout(() => setCopied(''), 1600)
+  }
   const meta = [['Function', specimen.name], ['Tests', tests.split('\n').filter(Boolean).length], ['Mutants', runScope ? mutants.length : '—'], ['Killed', runScope ? killed.length : '—'], ['Survivors', runScope ? survivors.length : '—']]
   const changed = scope === 'changed'
   return <><a className="skip" href="#lab">Skip to content</a><header className="masthead"><a className="wordmark" href="#top">SURVIVORS<span>.</span></a><nav><a href="#lab">Lab</a><a href="#guide">Field Guide</a><a href="#about">About</a></nav><a className="button button-small" href="#lab">Run the lab <ArrowUpRight size={15}/></a></header>
@@ -137,7 +143,7 @@ export default function Page() {
           </>}
         </div>}
       </section>
-      <section className="report section-shell" id="report"><div className="section-heading"><div><p className="eyebrow">No. 02 / Findings</p><h2>Survivors report.</h2></div><div className="report-actions"><button className="text-button" onClick={copyLink}><Link2 size={15}/>{copied === 'link' ? 'Copied' : 'Copy link'}</button><button className="text-button" onClick={copyReport}><Copy size={15}/>{copied === 'report' ? 'Copied' : 'Copy report'}</button></div></div>{cards.length === 0 ? <div className="empty"><Sparkles size={20}/><p>{noScopedMutants ? 'No mutable code on the changed lines.' : mutants.length ? 'All mutants killed. Excellent work.' : 'Run the lab to reveal what survived.'}</p></div> : <div className="survivor-list">{cards.map((m) => { const dead = killed.includes(m.id); return <motion.article layout key={m.key} className={`survivor-card ${selected === m.id ? 'selected' : ''} ${dead ? 'is-killed' : ''}`} onClick={() => setSelected(m.id)}>
+      <section className="report section-shell" id="report"><div className="section-heading"><div><p className="eyebrow">No. 02 / Findings</p><h2>Survivors report.</h2></div><div className="report-actions"><button className="text-button" onClick={copyLink}><Link2 size={15}/>{copied === 'link' ? 'Copied' : 'Copy link'}</button><button className="text-button" onClick={copyReport}><Copy size={15}/>{copied === 'report' ? 'Copied' : 'Copy report'}</button><button className="text-button" onClick={copyPrComment}><GitPullRequest size={15}/>{copied === 'pr' ? 'Copied' : 'Copy as PR comment'}</button></div></div>{cards.length === 0 ? <div className="empty"><Sparkles size={20}/><p>{noScopedMutants ? 'No mutable code on the changed lines.' : mutants.length ? 'All mutants killed. Excellent work.' : 'Run the lab to reveal what survived.'}</p></div> : <div className="survivor-list">{cards.map((m) => { const dead = killed.includes(m.id); return <motion.article layout key={m.key} className={`survivor-card ${selected === m.id ? 'selected' : ''} ${dead ? 'is-killed' : ''}`} onClick={() => setSelected(m.id)}>
           <div className="card-top"><span className="catalogue-no">MUT-{String(m.id + 1).padStart(2, '0')}</span>{dead ? <span className="killed-label"><Check size={14}/> KILLED</span> : <span className="survived-label"><Skull size={14}/> SURVIVED</span>}</div>
           <div className="card-main"><div><h3>{m.operator}</h3><p>Line {m.line} · {m.hint}</p></div><div className="diff"><span>{m.before}</span><b>→</b><strong>{m.after}</strong></div></div>
           <div className="card-actions">{dead ? <span className="card-note">Killed by the generated test.</span> : <button className="text-button" disabled={running} onClick={(e) => { e.stopPropagation(); addKillingTest(m) }}><FlaskConical size={13}/>Add killing test</button>}{!dead && <button className="text-button" onClick={(e) => { e.stopPropagation(); toggleEquivalent(m) }}><Equal size={13}/>Mark as equivalent</button>}</div>

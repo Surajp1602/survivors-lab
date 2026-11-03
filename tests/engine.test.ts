@@ -4,6 +4,7 @@ import { shortcutLabel } from '@/lib/platform'
 import { prepare } from '@/lib/source'
 import { cannotGenerate, generateKillingTest } from '@/lib/killing'
 import { decodeShare, encodeShare } from '@/lib/share'
+import { buildPrComment } from '@/lib/report'
 import { specimens } from '@/lib/presets'
 
 const preset = (id: string) => specimens.find((s) => s.id === id)!
@@ -179,5 +180,30 @@ describe('equivalent mutants', () => {
     expect(keys()).toEqual(keys())
     const state = { fn: 'f', tests: 't', scope: 'whole' as const, before: '', manual: noManual, equivalent: ['2:13: > '] }
     expect(decodeShare(encodeShare(state))).toEqual(state)
+  })
+})
+
+describe('PR comment', () => {
+  it('renders score, scope and each survivor as a diff block', () => {
+    const r = runEngine(config('04', 'changed'))
+    const comment = buildPrComment({
+      name: 'shippingFee',
+      tally: scoreOf(r.plan.mutants, r.killed, []),
+      scope: { mode: 'changed', lines: r.plan.lines, kept: r.plan.mutants.length, total: r.plan.total },
+      survivors: survivorsOf(r),
+    })
+    expect(comment).toBe([
+      '### Survivors mutation report · shippingFee',
+      '',
+      '**Mutation score:** 50% (1 of 2 killed) · **Scope:** Changed lines (1, 3) · 2 of 7 mutants',
+      '',
+      '#### 1 survivor',
+      '',
+      "**Line 3** · numeric literal — Assert the exact value; a range check like > 40 can't tell 90 from 91.",
+      '```diff',
+      '-  if (express) return 90;',
+      '+  if (express) return 91;',
+      '```',
+    ].join('\n'))
   })
 })
