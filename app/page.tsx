@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUpRight, Check, Copy, FlaskConical, Link2, Play, ShieldAlert, Skull, Sparkles, X } from 'lucide-react'
+import { ArrowUpRight, Check, Circle, Copy, FlaskConical, Link2, Play, ShieldAlert, Skull, Sparkles } from 'lucide-react'
 import { motion, AnimatePresence } from 'motion/react'
 import { javascript } from '@codemirror/lang-javascript'
 import { lineNumbers, gutter, GutterMarker, type EditorView, type BlockInfo, type Extension } from '@uiw/react-codemirror'
@@ -108,7 +108,8 @@ export default function Page() {
         {(mutants.length > 0 || noScopedMutants) && runScope && <div className="results">
           {runScope.mode === 'changed' && <p className="scope-summary">{scopeSummary(runScope)}</p>}
           {noScopedMutants ? <div className="score score-empty"><span className="field-label">Mutation score · changed lines only</span><p>No mutable code on the changed lines.</p></div> : <>
-            <div className="progress-line"><span>{running ? 'Testing specimens…' : 'Run complete'}</span><span>{killed.length} / {mutants.length} killed</span></div><div className="mutant-grid" aria-label="Mutant results">{mutants.map((m) => <div key={m.id} className={`mutant-cell ${killed.includes(m.id) ? 'killed' : !running ? 'survived' : ''}`} title={`${m.operator}, line ${m.line}`}>{killed.includes(m.id) ? <Check size={14}/> : !running ? <X size={14}/> : <span/>}</div>)}</div>
+            <div className="progress-line"><span>{running ? 'Testing specimens…' : 'Run complete'}</span><span>{killed.length} / {mutants.length} killed</span></div><div className="mutant-grid" role="list" aria-label="Mutant results">{mutants.map((m) => { const state = killed.includes(m.id) ? 'Killed' : !running ? 'Survived' : 'Pending'; const label = `${state}: ${m.operator}, line ${m.line}`; return <div key={m.id} role="listitem" aria-label={label} title={label} className={`mutant-cell ${state === 'Killed' ? 'killed' : state === 'Survived' ? 'survived' : ''}`}>{state === 'Killed' ? <Check size={14} aria-hidden="true"/> : state === 'Survived' ? <Circle size={10} fill="currentColor" aria-hidden="true"/> : null}</div> })}</div>
+            <div className="grid-legend" aria-hidden="true"><span><i className="legend-swatch killed"><Check size={10}/></i>Killed</span><span><i className="legend-swatch survived"><Circle size={7} fill="currentColor"/></i>Survived</span><span><i className="legend-swatch"/>Pending</span></div>
             <div className="score"><span className="field-label">Mutation score{runScope.mode === 'changed' ? ' · changed lines only' : ''}</span><strong>{score}<small>%</small></strong><span>{score === 100 ? 'No survivors. Your tests are doing their job.' : 'The survivors are the gaps.'}</span></div>
           </>}
         </div>}
