@@ -2,6 +2,7 @@ import { parse } from 'acorn'
 import { ancestor, simple } from 'acorn-walk'
 import { diffLines } from 'diff'
 import type { Operator } from './catalogue'
+import { describeSyntaxProblem, findSyntaxError, type SyntaxProblem } from './diagnostics'
 import type { Runner, SuiteOutcome } from './runner'
 import { prepare } from './source'
 
@@ -13,7 +14,9 @@ export type Manual = { add: number[]; remove: number[] }
  */
 export type MutantTarget = { kind: 'boundary'; fn: string; param: number; value: number } | { kind: 'return'; start: number; end: number }
 /** `key` is stable across runs of the same code (line, column, replacement), unlike the per-run `id`. */
-export type Mutant = { id: number; key: string; operator: Operator; line: number; before: string; after: string; hint: string; source: string; target?: MutantTarget; diff: { removed: string[]; added: string[] } }
+export type Mutant = { id: number; key: string; operator: Operator; line: number; before: string; after: string; hint: string; source: string; target?: MutantTarget; diff: MutantDiff }
+/** Whole lines around the mutation. `start`..`removedEnd` / `start`..`addedEnd` locate the change in the joined lines. */
+export type MutantDiff = { removed: string[]; added: string[]; start: number; removedEnd: number; addedEnd: number }
 export type RunConfig = { fn: string; tests: string; scope: Scope; before: string; manual: Manual }
 
 export const noManual: Manual = { add: [], remove: [] }
@@ -107,7 +110,7 @@ export function createMutants(input: string): Mutant[] {
     const lineStart = source.lastIndexOf('\n', node.start - 1) + 1
     const nextBreak = source.indexOf('\n', node.end)
     const lineEnd = nextBreak === -1 ? source.length : nextBreak
-    const diff = { removed: source.slice(lineStart, lineEnd).split('\n'), added: (source.slice(lineStart, node.start) + after + source.slice(node.end, lineEnd)).split('\n') }
+    const diff = { removed: source.slice(lineStart, lineEnd).split('\n'), added: (source.slice(lineStart, node.start) + after + source.slice(node.end, lineEnd)).split('\n'), start: node.start - lineStart, removedEnd: node.end - lineStart, addedEnd: node.start - lineStart + after.length }
     found.push({ id: found.length, key: `${line}:${column}:${after}`, operator, line, before: source.slice(node.start, node.end), after, hint, source: source.slice(0, node.start) + after + source.slice(node.end), target, diff })
   }
   const returned = (node: any, ancestors: any[]): MutantTarget | undefined => {
@@ -150,6 +153,29 @@ export async function runTests(runner: Runner, fnSource: string, testsSource: st
   return runner.suite(fn.code, fn.names, testsCode)
 }
 
+export const testFailurePrefix = 'Your tests fail on the original code — fix them before hunting mutants.'
+
+export type OriginalCheck =
+  | { ok: true }
+  | { ok: false; kind: 'syntax'; problem: SyntaxProblem; message: string }
+  | { ok: false; kind: 'timeout' | 'failure' | 'cancelled'; message: string }
+
+/**
+ * Gate before mutating: a parse error in either editor is reported with its position and never reaches the
+ * tests; "Your tests fail" is kept for tests that really run and fail.
+ */
+export async function checkOriginal(runner: Runner, fnSource: string, testsSource: string): Promise<OriginalCheck> {
+  for (const [source, editor] of [[fnSource, 'Function'], [testsSource, 'Tests']] as const) {
+    const problem = findSyntaxError(source, editor)
+    if (problem) return { ok: false, kind: 'syntax', problem, message: describeSyntaxProblem(problem) }
+  }
+  const r = await runTests(runner, fnSource, testsSource)
+  if (r.cancelled) return { ok: false, kind: 'cancelled', message: 'cancelled' }
+  if (r.timedOut) return { ok: false, kind: 'timeout', message: infiniteLoopMessage }
+  if (!r.ok) return { ok: false, kind: 'failure', message: `${testFailurePrefix} ${r.message}` }
+  return { ok: true }
+}
+
 export type RunPlan = { mutants: Mutant[]; lines: number[]; total: number; names: string[]; testsCode: string }
 
 /** Mutants for one run, scoped and re-numbered. Only the mutation sites are scoped; every mutant still faces the full test suite. */
@@ -176,8 +202,7 @@ export type EngineResult = { error?: string; plan: RunPlan; killed: number[]; ti
 /** Whole run: check the original passes, then test every in-scope mutant across the runner's workers. */
 export async function runEngine(runner: Runner, cfg: RunConfig): Promise<EngineResult> {
   const empty: RunPlan = { mutants: [], lines: [], total: 0, names: [], testsCode: '' }
-  const original = await runTests(runner, cfg.fn, cfg.tests)
-  if (original.timedOut) return { error: infiniteLoopMessage, plan: empty, killed: [], timedOut: [] }
+  const original = await checkOriginal(runner, cfg.fn, cfg.tests)
   if (!original.ok) return { error: original.message, plan: empty, killed: [], timedOut: [] }
   const plan = planRun(cfg)
   const outcomes = await Promise.all(plan.mutants.map((m) => testMutant(runner, m, plan)))

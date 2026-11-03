@@ -219,7 +219,7 @@ describe('add killing test', () => {
     const mutant = mutantOf(s.fn, s.tests, (m) => m.operator === 'relational boundary' && m.before === ' >= ')
     expect((await runEngine(runner, config('04', 'whole'))).killed).not.toContain(mutant.id)
     const generated = await generateKillingTest(runner, s.fn, s.tests, mutant)
-    expect(generated).toMatchObject({ ok: true, test: 'test("shippingFee at the 500 boundary", () => expect(shippingFee(500)).toBe(0));' })
+    expect(generated).toMatchObject({ ok: true, test: "test('shippingFee at the 500 boundary', () => expect(shippingFee(500)).toBe(0));" })
     if (!generated.ok) return
     expect((await runTests(runner, s.fn, generated.tests)).ok).toBe(true)
     const rerun = planRun({ fn: s.fn, tests: generated.tests, scope: 'whole', before: '', manual: noManual })
@@ -229,7 +229,7 @@ describe('add killing test', () => {
   it('kills the returned 90 -> 91 literal with the inputs of the test that reaches it', async () => {
     const mutant = mutantOf(s.fn, s.tests, (m) => m.before === '90')
     const generated = await generateKillingTest(runner, s.fn, s.tests, mutant)
-    expect(generated).toMatchObject({ ok: true, test: 'test("shippingFee returns exactly 90", () => expect(shippingFee(100, true)).toBe(90));' })
+    expect(generated).toMatchObject({ ok: true, test: "test('shippingFee returns exactly 90', () => expect(shippingFee(100, true)).toBe(90));" })
   })
 
   it('refuses when no reliable test exists', async () => {

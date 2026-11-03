@@ -22,7 +22,7 @@ const pairs: [text: string, background: string][] = [
   ['ink', 'surface-alt'], ['muted', 'surface-alt'], ['body', 'surface-alt'], ['accent-text', 'surface-alt'], ['added', 'surface-alt'],
   ['paper', 'ink'],
   ['on-accent', 'accent-strong'], ['on-accent', 'accent-strong-hover'],
-  ['editor-text', 'editor-bg'], ['editor-strong', 'editor-bg'],
+  ['editor-text', 'editor-bg'], ['editor-strong', 'editor-bg'], ['editor-text', 'editor-error'], ['editor-strong', 'editor-error'],
 ]
 
 describe('colour contrast (WCAG AA, 4.5:1)', () => {
