@@ -119,3 +119,11 @@ describe('7. whole-line diff', () => {
     expect(diffParts(m)).toEqual({ removed: ['  if (total ', '>=', ' 500) return 0;'], added: ['  if (total ', '>', ' 500) return 0;'] })
   })
 })
+
+describe('11. hero specimen', () => {
+  it('plays the real outcome of Specimen 01', async () => {
+    const { heroDemo } = await import('@/lib/presets')
+    const r = await runEngine(runner, whole(heroDemo.specimen.fn, heroDemo.specimen.tests))
+    expect(r.plan.mutants.map((m) => !r.killed.includes(m.id))).toEqual(heroDemo.survived)
+  })
+})
