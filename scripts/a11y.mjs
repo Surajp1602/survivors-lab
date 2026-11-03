@@ -62,6 +62,18 @@ const states = [
   { name: 'preset 04, Whole function', go: wholeFunctionRun },
   { name: 'syntax error', go: async (page) => { await page.goto(`${base}/#${syntaxError}`); await page.locator('.error').waitFor(); await page.evaluate(() => document.fonts.ready) } },
   {
+    name: 'stale results',
+    // Edit the tests after a run: results stay on screen, marked as out of date.
+    go: async (page) => {
+      await wholeFunctionRun(page)
+      await page.locator('.tests-wrap .cm-content').click()
+      await page.keyboard.press('End')
+      await page.keyboard.type(' ')
+      await page.locator('.results.is-stale').waitFor()
+      await page.locator('.stale-note').first().waitFor()
+    },
+  },
+  {
     name: 'survivors report',
     include: '#report',
     // Exercise every card variant: a killed card with "Also killed", a survivor, and the equivalent list.
