@@ -4,91 +4,17 @@ import dynamic from 'next/dynamic'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRight, Check, Copy, FlaskConical, Link2, Play, ShieldAlert, Skull, Sparkles, X } from 'lucide-react'
 import { motion, AnimatePresence } from 'motion/react'
-import { parse } from 'acorn'
-import { simple } from 'acorn-walk'
 import { javascript } from '@codemirror/lang-javascript'
 import { lineNumbers, gutter, GutterMarker, type EditorView, type BlockInfo, type Extension } from '@uiw/react-codemirror'
-import { diffLines } from 'diff'
+import { changedLines, isKilled, noManual, planRun, runTests, scopedLines, type Manual, type Mutant, type RunConfig, type Scope } from '@/lib/engine'
+import { specimens, type Specimen } from '@/lib/presets'
+import { decodeShare, encodeShare } from '@/lib/share'
 
 const Editor = dynamic(() => import('@uiw/react-codemirror').then((m) => m.default), { ssr: false })
 
-type Scope = 'whole' | 'changed'
-type Manual = { add: number[]; remove: number[] }
-type Specimen = { id: string; name: string; fn: string; tests: string; before?: string; scope?: Scope }
-const specimens: Specimen[] = [
-  { id: '01', name: 'isAdult', fn: 'function isAdult(age) {\n  return age >= 18;\n}', tests: "test('adult', () => expect(isAdult(30)).toBe(true));\ntest('minor', () => expect(isAdult(5)).toBe(false));" },
-  { id: '02', name: 'isLeapYear', fn: 'function isLeapYear(y) {\n  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;\n}', tests: "test('leap year', () => expect(isLeapYear(2024)).toBe(true));\ntest('common year', () => expect(isLeapYear(2023)).toBe(false));" },
-  { id: '03', name: 'applyDiscount', fn: 'function applyDiscount(price, pct) {\n  if (pct > 100) throw new Error(\"bad pct\");\n  return price - (price * pct) / 100;\n}', tests: "test('discount', () => expect(applyDiscount(200, 10)).toBe(180));\ntest('invalid pct', () => expect(() => applyDiscount(200, 150)).toThrow());" },
-  { id: '04', name: 'A small PR', scope: 'changed', before: 'function shippingFee(total) {\n  if (total >= 500) return 0;\n  return 40;\n}', fn: 'function shippingFee(total, express) {\n  if (total >= 500) return 0;\n  if (express) return 90;\n  return 40;\n}', tests: "test('free over 500', () => expect(shippingFee(600)).toBe(0));\ntest('standard fee', () => expect(shippingFee(100)).toBe(40));\ntest('express costs more', () => expect(shippingFee(100, true) > 40).toBeTruthy());" },
-]
-const noManual: Manual = { add: [], remove: [] }
-
-/** 1-based line numbers of `after` that were added or modified relative to `before`. Empty before = no diff scope. */
-function changedLines(before: string, after: string): Set<number> {
-  const out = new Set<number>()
-  if (!before.trim()) return out
-  let line = 1
-  for (const part of diffLines(before, after)) {
-    if (part.removed) continue
-    const count = part.count ?? part.value.split('\n').length - (part.value.endsWith('\n') ? 1 : 0)
-    if (part.added) for (let i = 0; i < count; i++) out.add(line + i)
-    line += count
-  }
-  return out
-}
-function scopedLines(before: string, after: string, manual: Manual): number[] {
-  const total = after.split('\n').length
-  const set = changedLines(before, after)
-  manual.add.forEach((n) => set.add(n)); manual.remove.forEach((n) => set.delete(n))
-  return [...set].filter((n) => n >= 1 && n <= total).sort((a, b) => a - b)
-}
-
-type ShareState = { fn: string; tests: string; scope: Scope; before: string; manual: Manual }
-const encodeShare = (data: ShareState) => { let bin = ''; new TextEncoder().encode(JSON.stringify(data)).forEach((b) => { bin += String.fromCharCode(b) }); return encodeURIComponent(btoa(bin)) }
-function decodeShare(hash: string): ShareState | null {
-  try {
-    const d = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(decodeURIComponent(hash)), (c) => c.charCodeAt(0))))
-    if (typeof d.fn !== 'string' || typeof d.tests !== 'string') return null
-    const ints = (v: unknown) => (Array.isArray(v) ? v.filter((n): n is number => Number.isInteger(n) && n > 0) : [])
-    return { fn: d.fn, tests: d.tests, scope: d.scope === 'changed' ? 'changed' : 'whole', before: typeof d.before === 'string' ? d.before : '', manual: { add: ints(d.manual?.add), remove: ints(d.manual?.remove) } }
-  } catch { return null }
-}
-
 class ScopeBar extends GutterMarker { toDOM() { const el = document.createElement('span'); el.className = 'scope-bar'; return el } }
 const scopeBar = new ScopeBar()
-
-type Mutant = { id: number; operator: string; line: number; before: string; after: string; hint: string; source: string }
-const operatorHints: Record<string, string> = { 'relational boundary': 'Add a test at exactly the boundary value.', arithmetic: 'Test the operation with a value that makes the result change.', equality: 'Test both equal and unequal values explicitly.', logical: 'Add a case where only one side of the condition is true.', 'boolean literal': 'Test the opposite boolean branch.', 'numeric literal': 'Test the exact threshold and its neighbor.', 'negated condition': 'Test the condition in both directions.', 'string literal': 'Assert the exact error or output string.' }
-
-function createMutants(source: string): Mutant[] {
-  const found: Mutant[] = []
-  let ast: any
-  try { ast = parse(source, { ecmaVersion: 'latest', locations: true }) } catch { return [] }
-  const add = (node: any, operator: string, after: string) => { const before = source.slice(node.start, node.end); found.push({ id: found.length, operator, line: node.loc.start.line, before, after, hint: operatorHints[operator], source: source.slice(0, node.start) + after + source.slice(node.end) }) }
-  simple(ast as any, {
-    BinaryExpression(node: any) {
-      const swaps: Record<string, string> = { '+': '-', '-': '+', '*': '/', '/': '*', '<': '<=', '<=': '<', '>': '>=', '>=': '>', '===': '!==', '!==': '===', '==': '!=', '!=': '==', '&&': '||', '||': '&&' }
-      if (swaps[node.operator]) add({ ...node, start: node.left.end, end: node.right.start, loc: node.loc }, ['<','>','<=','>='].includes(node.operator) ? 'relational boundary' : ['&&','||'].includes(node.operator) ? 'logical' : ['===','!==','==','!='].includes(node.operator) ? 'equality' : 'arithmetic', ` ${swaps[node.operator]} `)
-    },
-    Literal(node: any) { if (typeof node.value === 'boolean') add(node, 'boolean literal', String(!node.value)); else if (typeof node.value === 'number') add(node, 'numeric literal', String(node.value + 1)); else if (typeof node.value === 'string') add(node, 'string literal', '""') },
-    IfStatement(node: any) { const test = source.slice(node.test.start, node.test.end); add({ ...node.test, end: node.test.end, start: node.test.start, loc: node.test.loc }, 'negated condition', `!(${test})`) },
-  } as any)
-  return found
-}
-
-function runTests(fnSource: string, testsSource: string): { ok: boolean; message?: string } {
-  try {
-    const fn = new Function(`${fnSource}\nreturn {${((fnSource.match(/function\s+(\w+)/) || [])[1] || '')}}`)()
-    const test = (name: string, cb: () => void) => { try { cb() } catch (e: any) { throw new Error(`${name}: ${e.message}`) } }
-    const deep = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b)
-    const expect = (value: any) => ({ toBe: (x: any) => { if (value !== x) throw new Error(`expected ${String(x)}, received ${String(value)}`) }, toEqual: (x: any) => { if (!deep(value, x)) throw new Error('values are not equal') }, toThrow: () => { if (typeof value !== 'function') throw new Error('expected a function'); let threw = false; try { value() } catch { threw = true } if (!threw) throw new Error('expected function to throw') }, toBeTruthy: () => { if (!value) throw new Error('expected truthy value') }, toBeFalsy: () => { if (value) throw new Error('expected falsy value') } })
-    new Function(...Object.keys(fn), 'test', 'expect', testsSource)(...Object.values(fn), test, expect)
-    return { ok: true }
-  } catch (e: any) { return { ok: false, message: e.message || 'Unknown failure' } }
-}
-
 type RunScope = { mode: Scope; before: string; manual: Manual; lines: number[]; totalLines: number; kept: number; total: number }
-type RunConfig = { fn: string; tests: string; scope: Scope; before: string; manual: Manual }
 
 export default function Page() {
   const [specimen, setSpecimen] = useState(specimens[0]); const [fn, setFn] = useState(specimens[0].fn); const [tests, setTests] = useState(specimens[0].tests)
@@ -106,22 +32,20 @@ export default function Page() {
     setError(''); setSelected(null)
     const original = runTests(cfg.fn, cfg.tests)
     if (!original.ok) { setRunning(false); setError(`Your tests fail on the original code — fix them before hunting mutants. ${original.message}`); return }
-    const all = createMutants(cfg.fn)
-    const lines = cfg.scope === 'changed' ? scopedLines(cfg.before, cfg.fn, cfg.manual) : []
-    // Only the mutation sites are scoped; every mutant still faces the full test suite.
-    const inScope = cfg.scope === 'changed' ? all.filter((m) => lines.includes(m.line)) : all
-    const next = inScope.map((m, i) => ({ ...m, id: i }))
-    setRunScope({ mode: cfg.scope, before: cfg.before, manual: cfg.manual, lines, totalLines: cfg.fn.split('\n').length, kept: next.length, total: all.length })
+    const { mutants: next, lines, total } = planRun(cfg)
+    setRunScope({ mode: cfg.scope, before: cfg.before, manual: cfg.manual, lines, totalLines: cfg.fn.split('\n').length, kept: next.length, total })
     setMutants(next); setKilled([]); setRunning(true)
     for (const m of next) {
       await new Promise((r) => setTimeout(r, 110))
       if (token !== runToken.current) return
-      if (!runTests(m.source, cfg.tests).ok) setKilled((old) => [...old, m.id])
+      if (isKilled(m, cfg.tests)) setKilled((old) => [...old, m.id])
     }
     setRunning(false)
   }
   useEffect(() => {
     const shared = location.hash.length > 1 ? decodeShare(location.hash.slice(1)) : null
+    // Mount-only restore from the URL hash, which isn't available during SSR.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (shared) { setFn(shared.fn); setTests(shared.tests); setScope(shared.scope); setBefore(shared.before); setManual(shared.manual); run(shared) } else run()
   }, [])
   useEffect(() => { const h = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') run() }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h) })
