@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { createMutants, infiniteLoopMessage, noManual, planRun, runEngine, runTests, scoreOf, testMutant, type RunConfig } from '@/lib/engine'
+import { fieldGuide, marquee, OPERATORS } from '@/lib/catalogue'
 import { shortcutLabel } from '@/lib/platform'
 import { prepare } from '@/lib/source'
 import { cannotGenerate, generateKillingTest } from '@/lib/killing'
@@ -24,6 +25,25 @@ describe('presets', () => {
     expect(r.error).toBeUndefined()
     expect(r.plan.mutants).toHaveLength(2)
     expect(r.killed).toHaveLength(0)
+  })
+
+  it('02 isLeapYear: 11 mutants (including && <-> ||), 7 killed', async () => {
+    const r = await runEngine(runner, config('02', 'whole'))
+    expect(r.plan.mutants).toHaveLength(11)
+    expect(r.killed).toHaveLength(7)
+    const logical = r.plan.mutants.filter((m) => m.operator === 'logical')
+    expect(logical.map((m) => [m.before, m.after])).toEqual([[' && ', ' || '], [') || ', ') && ']])
+    expect(logical.every((m) => r.killed.includes(m.id))).toBe(true)
+  })
+
+  it('03 applyDiscount: 8 mutants, 5 killed', async () => {
+    const r = await runEngine(runner, config('03', 'whole'))
+    expect(r.plan.mutants).toHaveLength(8)
+    expect(r.killed).toHaveLength(5)
+  })
+
+  it('every mutant of every preset is valid JavaScript', () => {
+    for (const s of specimens) for (const m of createMutants(s.fn)) expect(() => new Function(m.source), `${s.id}: ${m.before} -> ${m.after}`).not.toThrow()
   })
 
   it('04 changed lines: 2 of 7 mutants in scope, 1 killed, survivor is 90 -> 91 on line 3', async () => {
@@ -68,6 +88,27 @@ describe('worker runner', () => {
   it('stops with a clear message when the original code never finishes', async () => {
     const r = await runEngine(runner, { fn: 'function spin() {\n  while (true) {}\n}', tests: "test('t', () => spin())", scope: 'whole', before: '', manual: noManual })
     expect(r.error).toBe(infiniteLoopMessage)
+  })
+})
+
+describe('operator catalogue', () => {
+  const implemented = [...OPERATORS].sort()
+  const program = (code: string) => `function f(age, price, tax, value, a, b, valid, limit) {\n  ${code.startsWith('if') ? `${code} {}` : `${code};`}\n}`
+
+  it('lists exactly the implemented operators in the Field Guide and the marquee', () => {
+    expect(fieldGuide.map((g) => g.operator).sort()).toEqual(implemented)
+    expect(marquee.map((m) => m.operator).sort()).toEqual(implemented)
+  })
+
+  it('has the engine produce every Field Guide example', () => {
+    const produced = new Set<string>()
+    for (const g of fieldGuide) {
+      const src = program(g.before)
+      const match = createMutants(src).find((m) => m.operator === g.operator && m.source === src.replace(g.before, g.after))
+      expect(match, `${g.operator}: ${g.before} -> ${g.after}`).toBeDefined()
+      produced.add(match!.operator)
+    }
+    expect([...produced].sort()).toEqual(implemented)
   })
 })
 

@@ -1,6 +1,7 @@
 import { parse } from 'acorn'
 import { ancestor, simple } from 'acorn-walk'
 import { diffLines } from 'diff'
+import type { Operator } from './catalogue'
 import type { Runner, SuiteOutcome } from './runner'
 import { prepare } from './source'
 
@@ -12,7 +13,7 @@ export type Manual = { add: number[]; remove: number[] }
  */
 export type MutantTarget = { kind: 'boundary'; fn: string; param: number; value: number } | { kind: 'return'; start: number; end: number }
 /** `key` is stable across runs of the same code (line, column, replacement), unlike the per-run `id`. */
-export type Mutant = { id: number; key: string; operator: string; line: number; before: string; after: string; hint: string; source: string; target?: MutantTarget; diff: { removed: string[]; added: string[] } }
+export type Mutant = { id: number; key: string; operator: Operator; line: number; before: string; after: string; hint: string; source: string; target?: MutantTarget; diff: { removed: string[]; added: string[] } }
 export type RunConfig = { fn: string; tests: string; scope: Scope; before: string; manual: Manual }
 
 export const noManual: Manual = { add: [], remove: [] }
@@ -38,7 +39,7 @@ export function scopedLines(before: string, after: string, manual: Manual): numb
   return [...set].filter((n) => n >= 1 && n <= total).sort((a, b) => a - b)
 }
 
-export const operatorHints: Record<string, string> = { 'relational boundary': 'Add a test at exactly the boundary value.', arithmetic: 'Test the operation with a value that makes the result change.', equality: 'Test both equal and unequal values explicitly.', logical: 'Add a case where only one side of the condition is true.', 'boolean literal': 'Test the opposite boolean branch.', 'numeric literal': 'Test the exact threshold and its neighbour.', 'negated condition': 'Test the condition in both directions.', 'string literal': 'Assert the exact error or output string.' }
+export const operatorHints: Record<Operator, string> = { 'relational boundary': 'Add a test at exactly the boundary value.', arithmetic: 'Test the operation with a value that makes the result change.', equality: 'Test both equal and unequal values explicitly.', logical: 'Add a case where only one side of the condition is true.', 'boolean literal': 'Test the opposite boolean branch.', 'numeric literal': 'Test the exact threshold and its neighbour.', 'negated condition': 'Test the condition in both directions.', 'string literal': 'Assert the exact error or output string.' }
 
 const comparisonOps = ['<', '>', '<=', '>=', '===', '!==', '==', '!=']
 const isFunctionNode = (n: any) => ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(n.type)
@@ -99,7 +100,7 @@ export function createMutants(input: string): Mutant[] {
   let ast: any
   let source: string
   try { source = prepare(input).code; ast = parse(source, { ecmaVersion: 'latest', locations: true }) } catch { return [] }
-  const add = (node: any, operator: string, after: string, hint = operatorHints[operator], target?: MutantTarget) => {
+  const add = (node: any, operator: Operator, after: string, hint = operatorHints[operator], target?: MutantTarget) => {
     const column = node.start - source.lastIndexOf('\n', node.start - 1) - 1
     const line = node.loc.start.line
     // Whole source lines around the mutation, before and after, for diff output.
@@ -113,11 +114,26 @@ export function createMutants(input: string): Mutant[] {
     const { parent, child } = consumerOf(node, ancestors)
     return parent?.type === 'ReturnStatement' && parent.argument === child ? { kind: 'return', start: child.start, end: child.end } : undefined
   }
+  /**
+   * Swap the operator of a binary or logical expression. The mutated range runs from the end of the left operand
+   * to the start of the right one, so it can include a closing parenthesis, as in `(a && b) || c`; only the
+   * operator token inside it is replaced.
+   */
+  const swapOperator = (node: any, swaps: Record<string, string>, operator: Operator, target?: MutantTarget) => {
+    const swap = swaps[node.operator]
+    if (!swap) return
+    const at = source.indexOf(node.operator, node.left.end)
+    const after = source.slice(node.left.end, at) + swap + source.slice(at + node.operator.length, node.right.start)
+    add({ ...node, start: node.left.end, end: node.right.start, loc: node.loc }, operator, after, undefined, target)
+  }
+  const relational = ['<', '>', '<=', '>=']
   ancestor(ast as any, {
     BinaryExpression(node: any, _: unknown, ancestors: any[]) {
-      const swaps: Record<string, string> = { '+': '-', '-': '+', '*': '/', '/': '*', '<': '<=', '<=': '<', '>': '>=', '>=': '>', '===': '!==', '!==': '===', '==': '!=', '!=': '==', '&&': '||', '||': '&&' }
-      if (swaps[node.operator]) add({ ...node, start: node.left.end, end: node.right.start, loc: node.loc }, ['<','>','<=','>='].includes(node.operator) ? 'relational boundary' : ['&&','||'].includes(node.operator) ? 'logical' : ['===','!==','==','!='].includes(node.operator) ? 'equality' : 'arithmetic', ` ${swaps[node.operator]} `, undefined, ['<','>','<=','>='].includes(node.operator) ? boundaryTarget(node, ancestors) : undefined)
+      const swaps: Record<string, string> = { '+': '-', '-': '+', '*': '/', '/': '*', '<': '<=', '<=': '<', '>': '>=', '>=': '>', '===': '!==', '!==': '===', '==': '!=', '!=': '==' }
+      const isRelational = relational.includes(node.operator)
+      swapOperator(node, swaps, isRelational ? 'relational boundary' : ['===', '!==', '==', '!='].includes(node.operator) ? 'equality' : 'arithmetic', isRelational ? boundaryTarget(node, ancestors) : undefined)
     },
+    LogicalExpression(node: any) { swapOperator(node, { '&&': '||', '||': '&&' }, 'logical') },
     Literal(node: any, _: unknown, ancestors: any[]) { if (typeof node.value === 'boolean') add(node, 'boolean literal', String(!node.value), undefined, returned(node, ancestors)); else if (typeof node.value === 'number') add(node, 'numeric literal', String(node.value + 1), numericHint(node, ancestors), returned(node, ancestors)); else if (typeof node.value === 'string') add(node, 'string literal', '""') },
     IfStatement(node: any) { const test = source.slice(node.test.start, node.test.end); add({ ...node.test, end: node.test.end, start: node.test.start, loc: node.test.loc }, 'negated condition', `!(${test})`) },
   } as any)
