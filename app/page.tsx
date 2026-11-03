@@ -6,6 +6,7 @@ import { ArrowUpRight, Check, Circle, Clock, Copy, Equal, GitPullRequest, FlaskC
 import { motion, AnimatePresence } from 'motion/react'
 import { javascript } from '@codemirror/lang-javascript'
 import { Decoration, EditorView, lineNumbers, gutter, GutterMarker, type BlockInfo, type Extension } from '@uiw/react-codemirror'
+import { CountUp } from './count-up'
 import { createBrowserRunner } from '@/lib/browser-runner'
 import { fieldGuide, marquee } from '@/lib/catalogue'
 import type { SyntaxProblem } from '@/lib/diagnostics'
@@ -169,7 +170,7 @@ export default function Page() {
           {noScopedMutants ? <div className="score score-empty"><span className="field-label">Mutation score · changed lines only</span><p>No mutable code on the changed lines.</p></div> : <>
             <div className="progress-line"><span>{running ? 'Testing specimens…' : 'Run complete'}</span><span>{progressLabel(tally)}</span></div><div className="mutant-grid" role="list" aria-label="Mutant results">{mutants.map((m) => { const state = timedOut.includes(m.id) ? 'Killed (timeout)' : killed.includes(m.id) ? 'Killed' : isEquivalent(m) ? 'Equivalent' : !running ? 'Survived' : 'Pending'; const label = `${state}: ${m.operator}, line ${m.line}`; return <div key={m.id} role="listitem" aria-label={label} title={label} className={`mutant-cell ${state === 'Killed (timeout)' ? 'killed timeout' : state.toLowerCase()}`}>{state === 'Killed (timeout)' ? <Clock size={13} aria-hidden="true"/> : state === 'Killed' ? <Check size={14} aria-hidden="true"/> : state === 'Survived' ? <Circle size={10} fill="currentColor" aria-hidden="true"/> : state === 'Equivalent' ? <Equal size={12} aria-hidden="true"/> : null}</div> })}</div>
             <div className="grid-legend" aria-hidden="true"><span><i className="legend-swatch killed"><Check size={10}/></i>Killed</span><span><i className="legend-swatch killed"><Clock size={9}/></i>Killed (timeout)</span><span><i className="legend-swatch survived"><Circle size={7} fill="currentColor"/></i>Survived</span><span><i className="legend-swatch equivalent"><Equal size={9}/></i>Equivalent</span><span><i className="legend-swatch"/>Pending</span></div>
-            <div className="score"><span className="field-label">Mutation score{runScope.mode === 'changed' ? ' · changed lines only' : ''}</span><strong>{score}<small>%</small></strong>{tally.equivalent > 0 && <em className="equivalent-count">({tally.equivalent} marked equivalent)</em>}<span>{score === 100 ? 'No survivors. Your tests are doing their job.' : 'The survivors are the gaps.'}</span></div>
+            <div className="score"><span className="field-label">Mutation score{runScope.mode === 'changed' ? ' · changed lines only' : ''}</span><strong className="score-value" aria-label={`${score}%`}><CountUp value={score}/><small aria-hidden="true">%</small></strong><div className="score-meta">{tally.equivalent > 0 && <em>({tally.equivalent} marked equivalent)</em>}<span>{score === 100 ? 'No survivors. Your tests are doing their job.' : 'The survivors are the gaps.'}</span></div></div>
           </>}
         </div>}
       </section>
