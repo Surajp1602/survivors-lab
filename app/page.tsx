@@ -8,7 +8,7 @@ import { javascript } from '@codemirror/lang-javascript'
 import { Decoration, EditorView, lineNumbers, gutter, GutterMarker, type BlockInfo, type Extension } from '@uiw/react-codemirror'
 import { CountUp } from './count-up'
 import { editorTheme } from './editor-theme'
-import { HeroSpecimen } from './hero-specimen'
+import { HeroSpecimen, heroTotals } from './hero-specimen'
 import { createBrowserRunner } from '@/lib/browser-runner'
 import { fieldGuide, marquee } from '@/lib/catalogue'
 import type { SyntaxProblem } from '@/lib/diagnostics'
@@ -16,7 +16,7 @@ import { changedLines, checkOriginal, noManual, planRun, scopedLines, scoreOf, t
 import { alsoKilled, catalogueNo, diffParts, progressLabel, resultsState, staleNote } from '@/lib/view'
 import type { Runner } from '@/lib/runner'
 import { clientPlatform, shortcutLabel } from '@/lib/platform'
-import { specimens, type Specimen } from '@/lib/presets'
+import { heroDemo, specimens, type Specimen } from '@/lib/presets'
 import { generateKillingTest } from '@/lib/killing'
 import { buildPrComment } from '@/lib/report'
 import { decodeShare, encodeShare } from '@/lib/share'
@@ -156,11 +156,12 @@ export default function Page() {
     const text = buildPrComment({ name: specimen.name, tally: noScopedMutants ? null : tally, scope: !r || r.mode === 'whole' ? { mode: 'whole' } : { mode: 'changed', lines: r.lines, kept: r.kept, total: r.total }, survivors })
     await navigator.clipboard.writeText(text); setCopied('pr'); setTimeout(() => setCopied(''), 1600)
   }
-  const meta = [['Function', specimen.name], ['Tests', tests.split('\n').filter(Boolean).length], ['Mutants', runScope ? mutants.length : '—'], ['Killed', runScope ? killed.length : '—'], ['Survivors', runScope ? survivors.length : '—']]
+  // The hero describes its own specimen (see HeroSpecimen); the lab below opens on Specimen 01.
+  const meta = [['Function', heroTotals.name], ['Tests', heroTotals.tests], ['Mutants', heroTotals.mutants], ['Killed', heroTotals.killed], ['Survivors', heroTotals.survivors]]
   const changed = scope === 'changed'
   return <><a className="skip" href="#lab">Skip to content</a><header className="masthead"><a className="wordmark" href="#top">SURVIVORS<span>.</span></a><nav><a href="#lab">Lab</a><a href="#guide">Field Guide</a><a href="#about">About</a></nav><a className="button button-small" href="#lab">Run the lab <ArrowUpRight size={15}/></a></header>
     <main id="top"><section className="hero page-grid"><div className="hero-copy"><p className="eyebrow">Mutation testing / browser lab</p><h1>Your tests passed.{' '}<br/><em>Here&apos;s what they let live.</em></h1><p className="lede">Code coverage tells you what ran. Mutation testing tells you whether your tests would notice if it were wrong.</p></div><div className="hero-mark"><HeroSpecimen/></div></section>
-      <section className="metadata page-grid" aria-label="Specimen metadata">{meta.map(([label, value]) => <div className="meta-cell" key={label}><span className="field-label">{label}</span><strong>{value}</strong></div>)}</section>
+      <section className="metadata page-grid" aria-label={`Specimen ${heroDemo.specimen.id} at a glance`}>{meta.map(([label, value]) => <div className="meta-cell" key={label}><span className="field-label">{label}</span><strong>{value}</strong></div>)}</section>
       <section className="marquee" aria-label="Mutation operators"><div>{marquee.map((m) => `${m.label}　`).join('')}</div></section>
       <section className="lab section-shell" id="lab"><div className="section-heading"><div><p className="eyebrow">No. 01 / Workbench</p><h2>Run the lab.</h2></div><p className="section-note">Write the code. Write the test.{' '}<br/>We&apos;ll introduce the wrongness.</p></div>
         <div className="specimen-picker"><span className="field-label">Specimen</span>{specimens.map((s) => <button key={s.id} className={specimen.id === s.id ? 'active' : ''} onClick={() => selectSpecimen(s)}><span>{s.id}</span>{s.name}</button>)}</div>

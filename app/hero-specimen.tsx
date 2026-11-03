@@ -7,10 +7,19 @@ import { heroDemo } from '@/lib/presets'
 import { useReducedMotion } from './motion-prefs'
 
 const mutants = createMutants(heroDemo.specimen.fn)
-const STEP_MS = 900
-const HOLD_STEPS = 4
+const STEP_MS = 280
+const HOLD_STEPS = 12
 
-/** Specimen 01's mutant cells filling in, in the results grid's cell styles. Reduced motion shows the final state. */
+/** Totals for the hero's metadata grid, from the same specimen the mini-grid plays. */
+export const heroTotals = {
+  name: heroDemo.specimen.name,
+  tests: heroDemo.specimen.tests.split('\n').filter(Boolean).length,
+  mutants: mutants.length,
+  killed: heroDemo.survived.filter((alive) => !alive).length,
+  survivors: heroDemo.survived.filter(Boolean).length,
+}
+
+/** The hero specimen's mutant cells filling in, in the results grid's cell styles. Reduced motion shows the final state. */
 export function HeroSpecimen() {
   const reduced = useReducedMotion()
   const [step, setStep] = useState(0)
@@ -20,23 +29,18 @@ export function HeroSpecimen() {
     return () => clearInterval(timer)
   }, [reduced])
   const filled = reduced ? mutants.length : Math.min(step, mutants.length)
-  const survivors = heroDemo.survived.filter(Boolean).length
+  const survivedSoFar = heroDemo.survived.slice(0, filled).filter(Boolean).length
   return (
-    <figure className="hero-specimen" aria-label={`Specimen ${heroDemo.specimen.id}, ${heroDemo.specimen.name}: ${mutants.length} mutants, ${survivors} survive the tests`}>
+    <figure className="hero-specimen" aria-label={`Specimen ${heroDemo.specimen.id}, ${heroDemo.specimen.name}: ${heroTotals.mutants} mutants, ${heroTotals.survivors} survive the tests`}>
       <figcaption className="field-label">Specimen {heroDemo.specimen.id} · {heroDemo.specimen.name}</figcaption>
-      <ul className="hero-rows" aria-hidden="true">
+      <div className="hero-grid" aria-hidden="true">
         {mutants.map((m, i) => {
           const done = i < filled
           const alive = heroDemo.survived[i]
-          return (
-            <li key={m.key}>
-              <span className={`mutant-cell ${done ? (alive ? 'survived' : 'killed') : ''}`}>{done && (alive ? <Circle size={10} fill="currentColor"/> : <Check size={14}/>)}</span>
-              <code>{m.before.trim()} → {m.after.trim()}</code>
-            </li>
-          )
+          return <span key={m.key} className={`mutant-cell ${done ? (alive ? 'survived' : 'killed') : ''}`}>{done && (alive ? <Circle size={9} fill="currentColor"/> : <Check size={12}/>)}</span>
         })}
-      </ul>
-      <p className="hero-tally" aria-hidden="true">{filled} / {mutants.length} tested · {heroDemo.survived.slice(0, filled).filter(Boolean).length} survived</p>
+      </div>
+      <p className="hero-tally" aria-hidden="true">{filled} / {mutants.length} tested · {survivedSoFar} survived</p>
     </figure>
   )
 }

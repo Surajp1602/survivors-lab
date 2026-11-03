@@ -9,5 +9,5 @@ export const specimens: Specimen[] = [
   { id: '04', name: 'A small PR', scope: 'changed', before: 'function shippingFee(total) {\n  if (total >= 500) return 0;\n  return 40;\n}', fn: 'function shippingFee(total, express) {\n  if (total >= 500) return 0;\n  if (express) return 90;\n  return 40;\n}', tests: "test('free over 500', () => expect(shippingFee(600)).toBe(0));\ntest('standard fee', () => expect(shippingFee(100)).toBe(40));\ntest('express costs more', () => expect(shippingFee(100, true) > 40).toBeTruthy());" },
 ]
 
-/** What the hero animation plays: Specimen 01's mutants and how they end up. A unit test checks this against a real run. */
-export const heroDemo = { specimen: specimens[0], survived: [true, true] }
+/** What the hero shows: Specimen 02's mutants and how they end up. A unit test checks this against a real run. */
+export const heroDemo = { specimen: specimens[1], survived: [false, false, false, true, true, false, false, true, true, false, false] }
