@@ -150,3 +150,13 @@ export function runEngine(cfg: RunConfig): EngineResult {
   const plan = planRun(cfg)
   return { plan, killed: plan.mutants.filter((m) => isKilled(m, plan)).map((m) => m.id) }
 }
+
+export type Score = { score: number; counted: number; killed: number; equivalent: number }
+
+/** Mutation score with mutants marked equivalent (by key) left out of both sides of the ratio. */
+export function scoreOf(mutants: Mutant[], killed: number[], equivalent: string[]): Score {
+  const marked = new Set(equivalent)
+  const counted = mutants.filter((m) => !marked.has(m.key))
+  const dead = counted.filter((m) => killed.includes(m.id)).length
+  return { score: counted.length ? Math.round((dead / counted.length) * 100) : mutants.length ? 100 : 0, counted: counted.length, killed: dead, equivalent: mutants.length - counted.length }
+}

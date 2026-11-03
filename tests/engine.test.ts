@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { createMutants, isKilled, noManual, planRun, runEngine, runTests, type RunConfig } from '@/lib/engine'
+import { createMutants, isKilled, noManual, planRun, runEngine, runTests, scoreOf, type RunConfig } from '@/lib/engine'
 import { shortcutLabel } from '@/lib/platform'
 import { prepare } from '@/lib/source'
 import { cannotGenerate, generateKillingTest } from '@/lib/killing'
+import { decodeShare, encodeShare } from '@/lib/share'
 import { specimens } from '@/lib/presets'
 
 const preset = (id: string) => specimens.find((s) => s.id === id)!
@@ -162,5 +163,21 @@ describe('add killing test', () => {
     const fn = 'function f(x) {\n  if (x >= 0) return 1;\n  return 1;\n}'
     const mutant = mutantOf(fn, 'test("t", () => expect(f(5)).toBe(1))', (m) => m.operator === 'relational boundary')
     expect(generateKillingTest(fn, 'test("t", () => expect(f(5)).toBe(1))', mutant)).toEqual({ ok: false, reason: cannotGenerate })
+  })
+})
+
+describe('equivalent mutants', () => {
+  it('leaves marked mutants out of the score', () => {
+    const r = runEngine(config('04', 'whole'))
+    expect(scoreOf(r.plan.mutants, r.killed, []).score).toBe(57)
+    const boundary = survivorsOf(r).find((m) => m.operator === 'relational boundary')!
+    expect(scoreOf(r.plan.mutants, r.killed, [boundary.key, 'stale:0:x'])).toEqual({ score: 67, counted: 6, killed: 4, equivalent: 1 })
+  })
+
+  it('keeps mutant keys stable across runs and persists marks in the share link', () => {
+    const keys = () => runEngine(config('04', 'whole')).plan.mutants.map((m) => m.key)
+    expect(keys()).toEqual(keys())
+    const state = { fn: 'f', tests: 't', scope: 'whole' as const, before: '', manual: noManual, equivalent: ['2:13: > '] }
+    expect(decodeShare(encodeShare(state))).toEqual(state)
   })
 })
