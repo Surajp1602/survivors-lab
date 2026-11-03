@@ -9,6 +9,7 @@ import { lineNumbers, gutter, GutterMarker, type EditorView, type BlockInfo, typ
 import { changedLines, isKilled, noManual, planRun, runTests, scopedLines, type Manual, type Mutant, type RunConfig, type Scope } from '@/lib/engine'
 import { clientPlatform, shortcutLabel } from '@/lib/platform'
 import { specimens, type Specimen } from '@/lib/presets'
+import { generateKillingTest } from '@/lib/killing'
 import { decodeShare, encodeShare } from '@/lib/share'
 
 const Editor = dynamic(() => import('@uiw/react-codemirror').then((m) => m.default), { ssr: false })
@@ -23,6 +24,7 @@ export default function Page() {
   const [scope, setScope] = useState<Scope>('whole'); const [before, setBefore] = useState(''); const [manual, setManual] = useState<Manual>(noManual)
   const [mutants, setMutants] = useState<Mutant[]>([]); const [killed, setKilled] = useState<number[]>([]); const [running, setRunning] = useState(false); const [error, setError] = useState(''); const [copied, setCopied] = useState(''); const [selected, setSelected] = useState<number | null>(null)
   const [runScope, setRunScope] = useState<RunScope | null>(null); const runToken = useRef(0)
+  const [lastRun, setLastRun] = useState<RunConfig | null>(null); const [generated, setGenerated] = useState<string[]>([]); const [notes, setNotes] = useState<Record<string, string>>({})
   const score = mutants.length ? Math.round((killed.length / mutants.length) * 100) : 0; const survivors = mutants.filter((m) => !killed.includes(m.id))
   const totalLines = fn.split('\n').length
   const shortcut = useSyncExternalStore(noSubscribe, () => shortcutLabel(clientPlatform()), () => 'Ctrl ↵')
@@ -35,6 +37,7 @@ export default function Page() {
     setError(''); setSelected(null)
     const original = runTests(cfg.fn, cfg.tests)
     if (!original.ok) { setRunning(false); setError(`Your tests fail on the original code — fix them before hunting mutants. ${original.message}`); return }
+    setLastRun(cfg)
     const plan = planRun(cfg)
     const { mutants: next, lines, total } = plan
     setRunScope({ mode: cfg.scope, before: cfg.before, manual: cfg.manual, lines, totalLines: cfg.fn.split('\n').length, kept: next.length, total })
@@ -53,7 +56,7 @@ export default function Page() {
     if (shared) { setFn(shared.fn); setTests(shared.tests); setScope(shared.scope); setBefore(shared.before); setManual(shared.manual); run(shared) } else run()
   }, [])
   useEffect(() => { const h = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') run() }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h) })
-  const selectSpecimen = (s: Specimen) => { runToken.current++; setRunning(false); setSpecimen(s); setFn(s.fn); setTests(s.tests); setBefore(s.before ?? ''); setScope(s.scope ?? 'whole'); setManual(noManual); setMutants([]); setKilled([]); setRunScope(null); setError('') }
+  const selectSpecimen = (s: Specimen) => { runToken.current++; setRunning(false); setSpecimen(s); setFn(s.fn); setTests(s.tests); setBefore(s.before ?? ''); setScope(s.scope ?? 'whole'); setManual(noManual); setMutants([]); setKilled([]); setRunScope(null); setError(''); setLastRun(null); setGenerated([]); setNotes({}) }
 
   // In Changed lines mode, clicking a line number adds that line to the scope or removes it by hand.
   const scopeExtensions = useMemo<Extension[]>(() => {
@@ -75,6 +78,18 @@ export default function Page() {
   const fnExtensions = useMemo(() => [javascript({ typescript: true }), ...scopeExtensions], [scopeExtensions])
   const jsExtensions = useMemo(() => [javascript({ typescript: true })], [])
 
+  // Write a test that kills this mutant, insert it only if it passes on the original and fails on the mutant, then rerun.
+  const addKillingTest = (m: Mutant) => {
+    if (!lastRun || running) return
+    const note = (text: string) => setNotes((n) => ({ ...n, [m.key]: text }))
+    if (lastRun.fn !== fn || lastRun.tests !== tests) return note('The code changed since this run. Run mutants again first.')
+    const result = generateKillingTest(lastRun.fn, lastRun.tests, m)
+    if (!result.ok) return note(result.reason)
+    setNotes((n) => Object.fromEntries(Object.entries(n).filter(([k]) => k !== m.key)))
+    setGenerated((g) => [...g, m.key]); setTests(result.tests); run({ ...lastRun, tests: result.tests })
+  }
+  // Survivors, plus survivors that a generated test has since killed, so their cards visibly flip.
+  const cards = mutants.filter((m) => !killed.includes(m.id) || generated.includes(m.key))
   const scopeSummary = (r: RunScope) => `Mutating ${r.lines.length} of ${r.totalLines} lines · ${r.kept} of ${r.total} mutants`
   const copyLink = async () => { await navigator.clipboard.writeText(`${location.origin}${location.pathname}#${encodeShare({ fn, tests, scope, before, manual })}`); setCopied('link'); setTimeout(() => setCopied(''), 1600) }
   const copyReport = async () => {
@@ -118,7 +133,12 @@ export default function Page() {
           </>}
         </div>}
       </section>
-      <section className="report section-shell" id="report"><div className="section-heading"><div><p className="eyebrow">No. 02 / Findings</p><h2>Survivors report.</h2></div><div className="report-actions"><button className="text-button" onClick={copyLink}><Link2 size={15}/>{copied === 'link' ? 'Copied' : 'Copy link'}</button><button className="text-button" onClick={copyReport}><Copy size={15}/>{copied === 'report' ? 'Copied' : 'Copy report'}</button></div></div>{survivors.length === 0 ? <div className="empty"><Sparkles size={20}/><p>{noScopedMutants ? 'No mutable code on the changed lines.' : mutants.length ? 'All mutants killed. Excellent work.' : 'Run the lab to reveal what survived.'}</p></div> : <div className="survivor-list">{survivors.map((m) => <motion.button layout key={m.id} className={`survivor-card ${selected === m.id ? 'selected' : ''}`} onClick={() => setSelected(m.id)}><div className="card-top"><span className="catalogue-no">MUT-{String(m.id + 1).padStart(2, '0')}</span><span className="survived-label"><Skull size={14}/> SURVIVED</span></div><div className="card-main"><div><h3>{m.operator}</h3><p>Line {m.line} · {m.hint}</p></div><div className="diff"><span>{m.before}</span><b>→</b><strong>{m.after}</strong></div></div></motion.button>)}</div>}</section>
+      <section className="report section-shell" id="report"><div className="section-heading"><div><p className="eyebrow">No. 02 / Findings</p><h2>Survivors report.</h2></div><div className="report-actions"><button className="text-button" onClick={copyLink}><Link2 size={15}/>{copied === 'link' ? 'Copied' : 'Copy link'}</button><button className="text-button" onClick={copyReport}><Copy size={15}/>{copied === 'report' ? 'Copied' : 'Copy report'}</button></div></div>{cards.length === 0 ? <div className="empty"><Sparkles size={20}/><p>{noScopedMutants ? 'No mutable code on the changed lines.' : mutants.length ? 'All mutants killed. Excellent work.' : 'Run the lab to reveal what survived.'}</p></div> : <div className="survivor-list">{cards.map((m) => { const dead = killed.includes(m.id); return <motion.article layout key={m.key} className={`survivor-card ${selected === m.id ? 'selected' : ''} ${dead ? 'is-killed' : ''}`} onClick={() => setSelected(m.id)}>
+          <div className="card-top"><span className="catalogue-no">MUT-{String(m.id + 1).padStart(2, '0')}</span>{dead ? <span className="killed-label"><Check size={14}/> KILLED</span> : <span className="survived-label"><Skull size={14}/> SURVIVED</span>}</div>
+          <div className="card-main"><div><h3>{m.operator}</h3><p>Line {m.line} · {m.hint}</p></div><div className="diff"><span>{m.before}</span><b>→</b><strong>{m.after}</strong></div></div>
+          <div className="card-actions">{dead ? <span className="card-note">Killed by the generated test.</span> : <button className="text-button" disabled={running} onClick={(e) => { e.stopPropagation(); addKillingTest(m) }}><FlaskConical size={13}/>Add killing test</button>}</div>
+          {notes[m.key] && <p className="card-note" role="status">{notes[m.key]}</p>}
+        </motion.article> })}</div>}</section>
       <section className="guide section-shell" id="guide"><div className="section-heading"><div><p className="eyebrow">No. 03 / Reference</p><h2>Field guide.</h2></div><p className="section-note">Small changes. Meaningful pressure.<br/>The complete catalogue of operators.</p></div><div className="guide-grid">{[['relational boundary','age > 18','age >= 18','Off-by-one conditions.'],['arithmetic','price + tax','price - tax','Incorrect calculations.'],['equality','value === 0','value !== 0','Unexpected equality.'],['logical','a && b','a || b','Missing branches.'],['boolean literal','return true','return false','Inverted defaults.'],['numeric literal','limit = 3','limit = 4','Wrong constants.'],['negated condition','if (valid)','if (!(valid))','Reversed control flow.'],['string literal','"bad pct"','""','Unasserted messages.']].map((g, i) => <article className="guide-card" key={g[0]}><span className="catalogue-no">0{i + 1}</span><h3>{g[0]}</h3><div className="guide-diff"><code>{g[1]}</code><span>→</span><code>{g[2]}</code></div><p>{g[3]}</p></article>)}</div><p className="guide-note">Scope runs to changed lines in review; run the whole function when you&apos;re auditing a test suite.</p></section>
       <section className="about section-shell page-grid" id="about"><div><p className="eyebrow">About the project</p><h2>A small instrument<br/><em>for serious tests.</em></h2></div><div className="about-copy"><p>Made by <strong>Suraj Pawar</strong>, a software engineer in Pune. At Handshake AI I author agentic coding benchmarks and build mutation-testing gates that check whether a benchmark&apos;s tests actually catch broken solutions.</p><p>Survivors is a small public version of that idea.</p><div className="links"><a href="https://github.com/Surajp1602" target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={14}/></a><a href="https://www.linkedin.com/in/surajpawar0216" target="_blank" rel="noreferrer">LinkedIn <ArrowUpRight size={14}/></a></div></div></section>
     </main><footer><span>SURVIVORS<span className="red">.</span></span><span>Runs entirely in your browser. No code is uploaded.</span><span className="footer-links"><a href="https://github.com/Surajp1602" target="_blank" rel="noreferrer">GitHub</a><a href="https://www.linkedin.com/in/surajpawar0216" target="_blank" rel="noreferrer">LinkedIn</a><span>© 2026 Suraj Pawar</span></span></footer></>

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { createMutants, noManual, runEngine, runTests, type RunConfig } from '@/lib/engine'
+import { createMutants, isKilled, noManual, planRun, runEngine, runTests, type RunConfig } from '@/lib/engine'
 import { shortcutLabel } from '@/lib/platform'
 import { prepare } from '@/lib/source'
+import { cannotGenerate, generateKillingTest } from '@/lib/killing'
 import { specimens } from '@/lib/presets'
 
 const preset = (id: string) => specimens.find((s) => s.id === id)!
@@ -132,5 +133,34 @@ describe('test syntax', () => {
       expect(prepare(s.fn).code).toBe(s.fn)
       expect(prepare(s.tests).code).toBe(s.tests)
     }
+  })
+})
+
+describe('add killing test', () => {
+  const s = preset('04')
+  const mutantOf = (fn: string, tests: string, pick: (m: ReturnType<typeof createMutants>[number]) => boolean) =>
+    planRun({ fn, tests, scope: 'whole', before: '', manual: noManual }).mutants.find(pick)!
+
+  it('kills the >= 500 boundary mutant by calling at exactly 500', () => {
+    const mutant = mutantOf(s.fn, s.tests, (m) => m.operator === 'relational boundary' && m.before === ' >= ')
+    expect(runEngine(config('04', 'whole')).killed).not.toContain(mutant.id)
+    const generated = generateKillingTest(s.fn, s.tests, mutant)
+    expect(generated).toMatchObject({ ok: true, test: 'test("shippingFee at the 500 boundary", () => expect(shippingFee(500)).toBe(0));' })
+    if (!generated.ok) return
+    expect(runTests(s.fn, generated.tests).ok).toBe(true)
+    const rerun = planRun({ fn: s.fn, tests: generated.tests, scope: 'whole', before: '', manual: noManual })
+    expect(isKilled(rerun.mutants.find((m) => m.key === mutant.key)!, rerun)).toBe(true)
+  })
+
+  it('kills the returned 90 -> 91 literal with the inputs of the test that reaches it', () => {
+    const mutant = mutantOf(s.fn, s.tests, (m) => m.before === '90')
+    const generated = generateKillingTest(s.fn, s.tests, mutant)
+    expect(generated).toMatchObject({ ok: true, test: 'test("shippingFee returns exactly 90", () => expect(shippingFee(100, true)).toBe(90));' })
+  })
+
+  it('refuses when no reliable test exists', () => {
+    const fn = 'function f(x) {\n  if (x >= 0) return 1;\n  return 1;\n}'
+    const mutant = mutantOf(fn, 'test("t", () => expect(f(5)).toBe(1))', (m) => m.operator === 'relational boundary')
+    expect(generateKillingTest(fn, 'test("t", () => expect(f(5)).toBe(1))', mutant)).toEqual({ ok: false, reason: cannotGenerate })
   })
 })

@@ -6,7 +6,13 @@ import { prepare } from './source'
 
 export type Scope = 'whole' | 'changed'
 export type Manual = { add: number[]; remove: number[] }
-export type Mutant = { id: number; operator: string; line: number; before: string; after: string; hint: string; source: string }
+/**
+ * What a killing-test generator needs to know about a mutant: a boundary comparison between a parameter and
+ * a constant, or a literal that a `return` statement hands back (the span is that statement's argument).
+ */
+export type MutantTarget = { kind: 'boundary'; fn: string; param: number; value: number } | { kind: 'return'; start: number; end: number }
+/** `key` is stable across runs of the same code (line, column, replacement), unlike the per-run `id`. */
+export type Mutant = { id: number; key: string; operator: string; line: number; before: string; after: string; hint: string; source: string; target?: MutantTarget }
 export type RunConfig = { fn: string; tests: string; scope: Scope; before: string; manual: Manual }
 
 export const noManual: Manual = { add: [], remove: [] }
@@ -43,14 +49,37 @@ const numberOf = (n: any): number | undefined => n?.type === 'Literal' && typeof
  * A numeric literal compared against (`total >= 500`) is a threshold; one that is returned or assigned
  * (`return 90`) is an exact value, where a loose range assertion can't see an off-by-one.
  */
-function numericHint(node: any, ancestors: any[]): string {
-  const threshold = 'Test the exact threshold and its neighbour.'
+/** The node that consumes a literal's value, looking through `-90` and `cond ? 90 : 40`. */
+function consumerOf(node: any, ancestors: any[]): { parent: any; child: any } {
   let i = ancestors.length - 2
   let child = node
-  if (ancestors[i]?.type === 'BinaryExpression' && comparisonOps.includes(ancestors[i].operator)) return threshold
-  // Look through `-90` and `cond ? 90 : 40` to the statement that consumes the value.
   while (i >= 0 && ((ancestors[i].type === 'UnaryExpression' && ancestors[i].operator === '-') || (ancestors[i].type === 'ConditionalExpression' && ancestors[i].test !== child))) { child = ancestors[i]; i-- }
-  const parent = ancestors[i]
+  return { parent: ancestors[i], child }
+}
+
+/** Name the tests would call a function by: its declaration name, or the variable it is assigned to. */
+function functionName(fnNode: any, ancestors: any[]): string | undefined {
+  if (fnNode.id?.name) return fnNode.id.name
+  const holder = ancestors[ancestors.indexOf(fnNode) - 1]
+  return holder?.type === 'VariableDeclarator' && holder.id.type === 'Identifier' ? holder.id.name : undefined
+}
+
+function boundaryTarget(node: any, ancestors: any[]): MutantTarget | undefined {
+  const constantOnRight = numberOf(node.right) !== undefined
+  const value = constantOnRight ? numberOf(node.right) : numberOf(node.left)
+  const operand = constantOnRight ? node.left : node.right
+  if (value === undefined || operand.type !== 'Identifier') return undefined
+  const fnNode = [...ancestors].reverse().find(isFunctionNode)
+  const fn = fnNode && functionName(fnNode, ancestors)
+  const param = fnNode ? fnNode.params.findIndex((p: any) => (p.type === 'AssignmentPattern' ? p.left : p).name === operand.name) : -1
+  return fn && param >= 0 ? { kind: 'boundary', fn, param, value } : undefined
+}
+
+function numericHint(node: any, ancestors: any[]): string {
+  const threshold = 'Test the exact threshold and its neighbour.'
+  const direct = ancestors[ancestors.length - 2]
+  if (direct?.type === 'BinaryExpression' && comparisonOps.includes(direct.operator)) return threshold
+  const { parent, child } = consumerOf(node, ancestors)
   const consumed = (parent?.type === 'ReturnStatement' && parent.argument === child) || (parent?.type === 'AssignmentExpression' && parent.right === child) || (parent?.type === 'VariableDeclarator' && parent.init === child) || (parent?.type === 'ArrowFunctionExpression' && parent.body === child)
   if (!consumed) return threshold
   const sign = ancestors[ancestors.length - 2]?.type === 'UnaryExpression' ? -1 : 1
@@ -70,13 +99,21 @@ export function createMutants(input: string): Mutant[] {
   let ast: any
   let source: string
   try { source = prepare(input).code; ast = parse(source, { ecmaVersion: 'latest', locations: true }) } catch { return [] }
-  const add = (node: any, operator: string, after: string, hint = operatorHints[operator]) => { const before = source.slice(node.start, node.end); found.push({ id: found.length, operator, line: node.loc.start.line, before, after, hint, source: source.slice(0, node.start) + after + source.slice(node.end) }) }
+  const add = (node: any, operator: string, after: string, hint = operatorHints[operator], target?: MutantTarget) => {
+    const column = node.start - source.lastIndexOf('\n', node.start - 1) - 1
+    const line = node.loc.start.line
+    found.push({ id: found.length, key: `${line}:${column}:${after}`, operator, line, before: source.slice(node.start, node.end), after, hint, source: source.slice(0, node.start) + after + source.slice(node.end), target })
+  }
+  const returned = (node: any, ancestors: any[]): MutantTarget | undefined => {
+    const { parent, child } = consumerOf(node, ancestors)
+    return parent?.type === 'ReturnStatement' && parent.argument === child ? { kind: 'return', start: child.start, end: child.end } : undefined
+  }
   ancestor(ast as any, {
-    BinaryExpression(node: any) {
+    BinaryExpression(node: any, _: unknown, ancestors: any[]) {
       const swaps: Record<string, string> = { '+': '-', '-': '+', '*': '/', '/': '*', '<': '<=', '<=': '<', '>': '>=', '>=': '>', '===': '!==', '!==': '===', '==': '!=', '!=': '==', '&&': '||', '||': '&&' }
-      if (swaps[node.operator]) add({ ...node, start: node.left.end, end: node.right.start, loc: node.loc }, ['<','>','<=','>='].includes(node.operator) ? 'relational boundary' : ['&&','||'].includes(node.operator) ? 'logical' : ['===','!==','==','!='].includes(node.operator) ? 'equality' : 'arithmetic', ` ${swaps[node.operator]} `)
+      if (swaps[node.operator]) add({ ...node, start: node.left.end, end: node.right.start, loc: node.loc }, ['<','>','<=','>='].includes(node.operator) ? 'relational boundary' : ['&&','||'].includes(node.operator) ? 'logical' : ['===','!==','==','!='].includes(node.operator) ? 'equality' : 'arithmetic', ` ${swaps[node.operator]} `, undefined, ['<','>','<=','>='].includes(node.operator) ? boundaryTarget(node, ancestors) : undefined)
     },
-    Literal(node: any, _: unknown, ancestors: any[]) { if (typeof node.value === 'boolean') add(node, 'boolean literal', String(!node.value)); else if (typeof node.value === 'number') add(node, 'numeric literal', String(node.value + 1), numericHint(node, ancestors)); else if (typeof node.value === 'string') add(node, 'string literal', '""') },
+    Literal(node: any, _: unknown, ancestors: any[]) { if (typeof node.value === 'boolean') add(node, 'boolean literal', String(!node.value), undefined, returned(node, ancestors)); else if (typeof node.value === 'number') add(node, 'numeric literal', String(node.value + 1), numericHint(node, ancestors), returned(node, ancestors)); else if (typeof node.value === 'string') add(node, 'string literal', '""') },
     IfStatement(node: any) { const test = source.slice(node.test.start, node.test.end); add({ ...node.test, end: node.test.end, start: node.test.start, loc: node.test.loc }, 'negated condition', `!(${test})`) },
   } as any)
   return found
